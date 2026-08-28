@@ -372,9 +372,11 @@ function renderDesk() {
   const books = S.books;
   const cur = books.find(b => b.id === S.lastBookId) || books[0];
   let html = `<div class="h-row"><div><div class="h-page">书桌</div><div class="h-sub">与书同行，与 AI 共读</div></div></div>`;
+  /* 正在读：最近一本书，大封面展示 */
   if (cur) {
     const meta = cur.chapterMeta || [];
-    const prog = Math.round((meta.findIndex(m => m.cid === cur.currentChapterId) + 1) / Math.max(1, meta.length) * 100);
+    const ci = meta.findIndex(m => m.cid === cur.currentChapterId);
+    const prog = meta.length ? Math.round((ci + 1) / meta.length * 100) : 0;
     html += `<div class="now-card card" onclick="openReader('${esc(cur.id)}')">
       <div class="cover" style="${mkCover(cur)}">${esc((cur.title || '书').slice(0, 3))}</div>
       <div class="info"><div class="t">${esc(cur.title)}</div>
@@ -383,17 +385,27 @@ function renderDesk() {
   } else {
     html += `<div class="card empty" onclick="goTab('lib')">书架还是空的，先导入一本书吧。</div>`;
   }
-  const reso = (S.resonates || []).slice(-2);
-  if (reso.length) {
-    html += `<div class="pulse-strip"><div class="tt">最近共鸣</div>`;
-    for (const r of reso) html += `<div class="bd">「${esc((r.selectedText || r.text || '').slice(0, 80))}」</div>`;
-    html += `<div class="mt">——${esc(fmtDay(r.createdAt))}</div></div>`;
+  /* 最近留下的一点东西：便签条恢复 */
+  const notes = [];
+  const reso = (S.resonates || []).slice(-1);
+  if (reso.length) notes.push({ text: `「${esc((reso[0].selectedText || '').slice(0, 60))}」`, label: '共鸣', time: reso[0].createdAt });
+  const lastIns = S.insights.filter(i => i.text).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 1);
+  if (lastIns.length) notes.push({ text: esc(lastIns[0].text.slice(0, 60)), label: displayType(lastIns[0].type), time: lastIns[0].createdAt });
+  if (notes.length) {
+    for (const n of notes) {
+      html += `<div class="note-strip"><div class="nt">${esc(n.label)}</div><div class="nb">${n.text}</div><div class="nm">${timeAgo(n.time)}</div></div>`;
+    }
   }
-  html += `<div class="section-label">书库</div>`;
+  /* 书架入口 */
+  html += `<div class="section-label">书架</div>`;
   const others = books.filter(b => b !== cur).slice(0, 4);
   for (const b of others) {
-    html += `<div class="mini-line" onclick="openReader('${esc(b.id)}')"><span>${esc(b.title)}</span><span class="ts">${b.chapterMeta ? b.chapterMeta.length + ' 章' : ''}</span></div>`;
+    const meta = b.chapterMeta || [];
+    const prog = meta.length ? Math.round((meta.findIndex(m => m.cid === b.currentChapterId) + 1) / meta.length * 100) : 0;
+    html += `<div class="mini-line" onclick="openReader('${esc(b.id)}')"><span>${esc(b.title)}</span><span class="ts">${prog}%</span></div>`;
   }
+  if (books.length > 1) html += `<button class="more-link" onclick="goTab('lib')">全部 ${books.length} 本书 ›</button>`;
+  else if (!books.length) html += `<button class="add-book-btn" onclick="openImportSheet()">+ 导入第一本书</button>`;
   body.innerHTML = html;
 }
 function goTab(tab) {
@@ -409,18 +421,22 @@ function renderLib() {
   const body = $id('libBody');
   if (!body) return;
   const books = S.books;
-  let html = `<div class="h-row"><div><div class="h-page">书库</div><div class="h-sub">${books.length} 本书的完整阅读史</div></div></div>`;
+  let html = `<div class="h-row"><div><div class="h-page">书库</div><div class="h-sub">${books.length} 本书 · 点击封面继续阅读</div></div></div>`;
+  html += `<div class="shelf-grid">`;
   for (const b of books) {
     const meta = b.chapterMeta || [];
     const idx = meta.findIndex(m => m.cid === b.currentChapterId);
     const prog = meta.length ? Math.round((idx + 1) / meta.length * 100) : 0;
-    html += `<div class="book-card card" onclick="openReader('${esc(b.id)}')">
-      <div class="cover" style="${mkCover(b)}">${esc((b.title || '书').slice(0, 3))}</div>
-      <div class="info"><div class="t">${esc(b.title)}</div>
-      <div class="m">${esc(b.author || '未知作者')} · ${meta.length} 章</div>
-      <div class="p"><i style="width:${prog}%"></i></div></div>
-      <button class="more" onclick="event.stopPropagation();openBookSheet('${esc(b.id)}')">•••</button></div>`;
+    html += `<div class="shelf-item" onclick="openReader('${esc(b.id)}')">
+      <div class="shelf-cover" style="${mkCover(b)}">
+        <div class="bk-title">${esc(b.title || '未命名')}</div>
+        <div class="bk-author">${esc(b.author || '')}</div>
+      </div>
+      <div class="bk-name">${esc(b.title || '未命名')}</div>
+      <div class="bk-prog">${prog}%</div>
+    </div>`;
   }
+  html += `</div>`;
   html += `<button class="add-book-btn" onclick="openImportSheet()">+ 导入新书（TXT / EPUB）</button>`;
   body.innerHTML = html;
 }
@@ -551,11 +567,48 @@ function openCoDrawer(quoteText, topic) {
   if (quoteText) { q.hidden = false; q.innerHTML = `<span class="qlabel">当前段落</span>${esc(String(quoteText))}`; }
   else q.hidden = true;
   $id('coTopic').textContent = topic || '正在共读';
-  $id('coInput').focus();
+  /* 不自动 focus 输入框，用户主动点击后才弹出键盘 */
 }
 function closeCoDrawer() {
   const d = $id('coDrawer');
   d.classList.remove('open'); d.setAttribute('aria-hidden', 'true');
+}
+/* 共读打开：已有会话则恢复，否则创建新话题 */
+async function openCoreadForChapter() {
+  const ch = S.rCh; if (!ch) return;
+  S.rParaNum = currentParaNum();
+  S.rQuote = currentQuoteText();
+  /* 清除空话题（无用户消息的） */
+  await cleanupEmptySessions();
+  /* 查找当前章节已有会话 */
+  const sessions = await listData('sessions', true);
+  const existing = sessions.filter(s => s.bookId === S.rBook.id && s.chapterId === ch.id && s.msgs && s.msgs.length > 0)
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  if (existing.length > 0) {
+    /* 恢复最近一次有消息的会话 */
+    S.rSess = existing[0];
+  } else {
+    /* 创建新会话，不添加开始共读标记 */
+    newCoSession();
+  }
+  const paras = parasOf(ch.text);
+  const start = chapterParaStart(S.rBook, ch.id);
+  const gp = S.rParaNum;
+  const local = Math.max(0, gp - start);
+  const unit = extractUnit(ch.text, local, 900);
+  renderCoMsgs();
+  if (S.rSess.lastSuggest) renderSuggestCard(S.rSess.lastSuggest);
+  openCoDrawer(unit, '共读 · ' + (ch.title || ''));
+  refreshCompanionBadge();
+}
+async function cleanupEmptySessions() {
+  const rows = await listCol('sessions', true);
+  for (const r of rows) {
+    const s = r.data;
+    if (s && s.msgs && s.msgs.length === 0) {
+      await A.db.delete('sessions', r.id);
+    }
+  }
 }
 function renderCoMsgs(appendOnly) {
   const box = $id('coMsgs');
@@ -613,7 +666,8 @@ async function sendCoMessage() {
   input.value = ''; input.disabled = true; $id('coSend').disabled = true;
   if (!S.rSess) newCoSession();
   const sess = S.rSess;
-  sess.msgs.push({ role: 'user', text, quote: (S.rQuote || '').slice(0, 100) });
+  /* 原文已在抽屉顶部显示，消息内不再重复引用 */
+  sess.msgs.push({ role: 'user', text });
   renderCoMsgs();
   const typing = document.createElement('div');
   typing.className = 'typing'; typing.innerHTML = '<span class="spin"></span> 共读中…';
@@ -873,25 +927,15 @@ function bindUI() {
     S.mindWanted = false;
   });
   $id('rToc').addEventListener('click', () => openTocSheet());
-  $id('rCo').addEventListener('click', () => {
-    const ch = S.rCh; if (!ch) return;
-    S.rParaNum = currentParaNum();
-    S.rQuote = currentQuoteText();
-    const paras = parasOf(ch.text);
-    const start = chapterParaStart(S.rBook, ch.id);
-    const gp = S.rParaNum;
-    const local = Math.max(0, gp - start);
-    const unit = extractUnit(ch.text, local, 900);
-    if (!S.rSess || S.rSess.chapterId !== ch.id) newCoSession();
-    if (!S.rSess.msgs.length) S.rSess.msgs.push({ role: 'sess', text: '开始共读 · ' + (ch.title || '') });
-    renderCoMsgs();
-    if (S.rSess.lastSuggest) renderSuggestCard(S.rSess.lastSuggest);
-    openCoDrawer(unit, '共读 · ' + (ch.title || ''));
-    refreshCompanionBadge();
-  });
+  $id('rCo').addEventListener('click', () => openCoreadForChapter());
   $id('coClose').addEventListener('click', closeCoDrawer);
   $id('coSend').addEventListener('click', sendCoMessage);
-  $id('coInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendCoMessage(); } });
+  /* 回车换行由 textarea 原生处理，只有点击发送按钮才发送；输入时自动增高 */
+  $id('coInput').addEventListener('input', () => {
+    const ta = $id('coInput');
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(96, Math.max(40, ta.scrollHeight)) + 'px';
+  });
   $id('coSaveI').addEventListener('click', () => {
     S.rParaNum = currentParaNum();
     S.rQuote = currentQuoteText();
@@ -1103,8 +1147,10 @@ function mindCardHtml(r) {
 }
 /* 视图一：时间线 —— 只展示六类思想轨迹，不含普通操作 */
 function renderTimelineView() {
-  const rows = filterRows(thoughtRows()).slice(0, 80);
-  if (!rows.length) return `<div class="empty">还没有思想记录。回到阅读器，把读到的东西想明白、写下来。</div>`;
+  /* 只记录真正的思想成果；限制最近 90 天、最多 60 条，避免无限增长成操作日志 */
+  const cutoff = Date.now() - 90 * 86400000;
+  const rows = filterRows(thoughtRows()).filter(r => (r.ts || 0) >= cutoff).slice(0, 60);
+  if (!rows.length) return `<div class="empty">最近 90 天还没有思想记录。回到阅读器，把读到的东西想明白、写下来。</div>`;
   const byDay = {};
   for (const r of rows) {
     const d = new Date(r.ts || Date.now());
@@ -1300,13 +1346,45 @@ function openTocSheet() {
     $id('rScroll').scrollTop = 0;
   }));
 }
-function openSessionsSheet() {
-  const sessions = S.timeline.filter(t => t && t.ts);
-  openSheet(`<div class="grab"></div><div class="s-title">共读话题</div>` +
-    (sessions.length ? sessions.slice().sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, 60).map(s => {
+async function openSessionsSheet() {
+  const all = await listData('sessions', true);
+  /* 只列出有内容的会话，按最近排序 */
+  const sessions = all.filter(s => s && s.msgs && s.msgs.length > 0)
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 40);
+  const sheet = openSheet(`<div class="grab"></div><div class="s-title">共读话题</div>` +
+    (sessions.length ? sessions.map(s => {
       const book = S.books.find(b => b.id === s.bookId);
-      return `<button class="row-btn">${esc(String(s.text || '').slice(0, 60))}${book ? ' · ' + esc(book.title) : ''}<span class="ts">${timeAgo(s.ts)}</span></button>`;
+      const lastText = (s.msgs[s.msgs.length - 1] || {}).text || '';
+      const label = (s.topic && s.topic !== '——' ? s.topic : lastText.slice(0, 20)) || '共读';
+      return `<div class="row-btn" style="display:flex;align-items:center;gap:6px">
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" onclick="openCoBySession('${esc(s.id)}')">${esc(label)}${book ? '<span class="ts"> · ' + esc(book.title) + '</span>' : ''}</span>
+        <span class="ts">${timeAgo(s.createdAt)}</span>
+        <button class="s-del" data-sid="${esc(s.id)}" style="color:var(--danger);background:none;border:none;font-size:15px;padding:2px 6px">✕</button>
+      </div>`;
     }).join('') : `<div class="empty">还没有话题记录</div>`));
+  sheet.querySelectorAll('.s-del').forEach(b => b.addEventListener('click', async () => {
+    await removeById('sessions', b.dataset.sid);
+    if (S.rSess && S.rSess.id === b.dataset.sid) S.rSess = null;
+    closeSheet();
+    openSessionsSheet();
+  }));
+}
+async function openCoBySession(sessionId) {
+  const all = await listData('sessions', true);
+  const s = all.find(x => x.id === sessionId);
+  if (!s) return;
+  const book = S.books.find(b => b.id === s.bookId);
+  if (book) {
+    S.rBook = book;
+    await openReader(book.id);
+    S.rSess = s;
+    S.rChIdx = Math.max(0, (book.chapterMeta || []).findIndex(m => m.cid === s.chapterId));
+    S.rCh = S.bookChCache[S.rChIdx];
+    if (S.rCh) renderReaderChapter();
+    renderCoMsgs();
+    if (s.lastSuggest) renderSuggestCard(s.lastSuggest);
+    openCoDrawer(s.quote || '', s.topic || '共读');
+  } else toast('这本书已不在书架');
 }
 /* 共读设置：上下文条数 5/10/20/40/80（P1 已落地，这里校验可用） */
 function openCoreadSettings() {

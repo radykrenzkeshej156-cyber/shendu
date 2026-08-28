@@ -23,12 +23,15 @@
 
   <div id="reader" class="reader">
     <header class="reader-top" id="readerTop">
-      <button class="rbtn" id="rBack" aria-label="返回">‹</button>
+      <div class="r-left">
+        <button class="rbtn" id="rBack" aria-label="返回">‹</button>
+        <button class="rbtn" id="rToc" aria-label="目录">☰</button>
+      </div>
       <div class="r-chap">
         <span id="rChapTitle">——</span>
         <span class="r-progress" id="rProgress"></span>
       </div>
-      <button class="rbtn" id="rToc" aria-label="目录">☰</button>
+      <div class="r-right" aria-hidden="true"></div>
     </header>
     <div class="reader-scroll" id="rScroll">
       <div class="reader-inner" id="rInner"></div>
@@ -60,7 +63,7 @@
       <button id="coSess">话题</button>
     </div>
     <div class="co-input">
-      <input id="coInput" placeholder="说说你的理解…" autocomplete="off">
+      <textarea id="coInput" rows="1" placeholder="说说你的理解…（回车换行，点发送发送）" autocomplete="off"></textarea>
       <button id="coSend" aria-label="发送">→</button>
     </div>
   </div>
