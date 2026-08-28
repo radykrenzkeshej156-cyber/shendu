@@ -99,8 +99,6 @@ input, textarea { font-family: inherit; }
 .shelf-item .more { color: var(--ink-3); font-size: 15px; background: none; border: none; padding: 2px 8px; }
 .add-book-btn { width: 100%; padding: 15px; margin-top: 12px; border: 1.5px dashed #d8d0c5; border-radius: var(--radius); background: none; color: var(--ink-2); font-size: 13.5px; }
 .add-book-btn:active { background: #f3efe9; }
-.add-book-btn { width: 100%; padding: 15px; margin-top: 12px; border: 1.5px dashed #d8d0c5; border-radius: var(--radius); background: none; color: var(--ink-2); font-size: 13.5px; }
-.add-book-btn:active { background: #f3efe9; }
 
 /* 思想空间：三视图 */
 .mind-tabs { display: flex; gap: 8px; overflow-x: auto; padding: 6px 2px 10px; -webkit-overflow-scrolling: touch; }
