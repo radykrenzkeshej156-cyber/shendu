@@ -23,22 +23,18 @@
 
   <div id="reader" class="reader">
     <header class="reader-top" id="readerTop">
-      <div class="r-left">
-        <button class="rbtn" id="rBack" aria-label="返回">‹</button>
-        <button class="rbtn" id="rToc" aria-label="目录">☰</button>
-      </div>
+      <button class="rbtn" id="rBack" aria-label="返回">‹</button>
       <div class="r-chap">
         <span id="rChapTitle">——</span>
         <span class="r-progress" id="rProgress"></span>
       </div>
-      <div class="r-right" aria-hidden="true"></div>
+      <button class="rbtn" id="rToc" aria-label="目录">☰</button>
     </header>
     <div class="reader-scroll" id="rScroll">
       <div class="reader-inner" id="rInner"></div>
     </div>
     <footer class="reader-bottom" id="readerBottom">
       <button id="rCo"><span class="ic av" id="rCoAvatar">··</span><span id="rCoName">共读</span></button>
-      <button id="rPractice"><span class="ic">→</span><span>实践</span></button>
       <button id="rDetail"><span class="ic">◈</span><span>详情</span></button>
       <button id="rMind"><span class="ic">✧</span><span>思想</span></button>
     </footer>
@@ -63,7 +59,7 @@
       <button id="coSess">话题</button>
     </div>
     <div class="co-input">
-      <textarea id="coInput" rows="1" placeholder="说说你的理解…（回车换行，点发送发送）" autocomplete="off"></textarea>
+      <input id="coInput" placeholder="说说你的理解…" autocomplete="off">
       <button id="coSend" aria-label="发送">→</button>
     </div>
   </div>
