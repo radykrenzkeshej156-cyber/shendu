@@ -377,12 +377,16 @@ async function renderLib(groupId) {
       <button class="add-book-btn" id="addBookBtn">＋ 导入书籍</button>`;
   }
   $id('libBody').innerHTML = html;
-  $id('libBody').addEventListener('click', (e) => {
-    const moreBtn = e.target.closest('.more');
-    if (moreBtn) { e.stopPropagation(); openBookMenu(moreBtn.dataset.bid); return; }
-    const card = e.target.closest('.book-card');
-    if (card) openReader(card.dataset.bid);
-  });
+  /* 事件只绑定一次，避免多次渲染造成重复弹窗 */
+  if (!$id('libBody')._libBound) {
+    $id('libBody').addEventListener('click', (e) => {
+      const moreBtn = e.target.closest('.more');
+      if (moreBtn) { e.stopPropagation(); openBookMenu(moreBtn.dataset.bid); return; }
+      const card = e.target.closest('.book-card');
+      if (card) openReader(card.dataset.bid);
+    });
+    $id('libBody')._libBound = true;
+  }
   const ab = $id('addBookBtn');
   if (ab) ab.addEventListener('click', openImportSheet);
   const agb = $id('addGroupBtn');
@@ -635,15 +639,17 @@ async function applyTraceDots() {
     const hasInsight = hits.some(t => t.type === 'insight');
     const hasQuestion = hits.some(t => t.type === 'question');
     const hasResonate = hits.some(t => t.type === 'resonate');
-    const dot = document.createElement('span');
-    dot.className = 'trace-dot ' + (hasQuestion ? 'question' : hasInsight ? 'insight' : '');
-    if (hasResonate) dot.style.background = '#e0b8c0';
-    dot.title = (hasQuestion ? '悬题 ' : '') + (hasInsight ? '理解 ' : '') + (hasResonate ? '共鸣 ' : '');
-    dot.addEventListener('click', (ev) => {
+    /* 明显痕迹：整段下划线 + 段尾大圆点 */
+    const mark = document.createElement('span');
+    mark.className = 'trace-mark ' + (hasQuestion ? 'question' : hasInsight ? 'insight' : hasResonate ? 'resonate' : '');
+    mark.innerHTML = '•';
+    mark.title = (hasQuestion ? '悬题 ' : '') + (hasInsight ? '理解 ' : '') + (hasResonate ? '共鸣 ' : '');
+    mark.addEventListener('click', (ev) => {
       ev.stopPropagation();
       openTraceDetail(hits[0].id);
     });
-    pEl.appendChild(dot);
+    pEl.appendChild(mark);
+    pEl.classList.add('has-trace', hasQuestion ? 't-question' : hasInsight ? 't-insight' : 't-resonate');
   });
 }
 function updateAllTraces() { applyTraceDots().then(() => {}); }
@@ -675,7 +681,7 @@ function buildSelBar() {
     <button data-act="coread">共读</button>
     <button data-act="resonate">共鸣</button>
     <button data-act="question">悬题</button>
-    <button data-act="note">笔记</button>`;
+    <button data-act="understand">理解</button>`;
   bar.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
     const act = b.dataset.act;
     hideSelBar();
@@ -713,7 +719,7 @@ function handleSelAction(act) {
   if (act === 'coread') openCoRead('quote', text, para, local);
   else if (act === 'resonate') saveResonate(text, para);
   else if (act === 'question') openQuestionSheet({ bookId: S.rBook ? S.rBook.id : null, chapterId: chapId, paraNum: para, quote: text, local });
-  else if (act === 'note') openNoteSheet(text, para);
+  else if (act === 'understand') openUnderstandSheet(text, para);
 }
 /* 共鸣：用户主动收藏，不做 AI 判断 */
 async function saveResonate(quote, para) {
@@ -732,33 +738,29 @@ async function saveResonate(quote, para) {
   toast('已收藏为共鸣');
   updateAllTraces();
 }
-async function saveNote(quote, para) {
-  if (!S.rBook || !S.rChapter) return;
-  await upsert('annotations', {
-    id: uid(), type: 'note', bookId: S.rBook.id, chapterId: S.rChapter.id,
-    paraNum: para, selectedText: quote, content: '', fromWho: 'user', createdAt: Date.now(),
-  });
-  await upsert('traces', {
-    id: 'tr_' + uid(), bookId: S.rBook.id, chapterId: S.rChapter.id,
-    paraNum: para, type: 'note', summary: quote.slice(0, 40), ts: Date.now(),
-  });
-  toast('已标记');
-  updateAllTraces();
-}
-function openNoteSheet(quote, para) {
+/* 选中文字 → 记录「理解」：直接写入思想库（我的理解），并在原文留下痕迹 */
+function openUnderstandSheet(quote, para) {
   openSheet({
-    title: '批注',
+    title: '写下理解',
     html: `
       <div class="field"><div style="font-size:12.5px;color:var(--ink-2);line-height:1.7;background:var(--surface-2);border-radius:9px;padding:9px 11px;">「${esc(quote.slice(0, 100))}」</div></div>
-      <div class="field"><textarea id="noteText" placeholder="写一笔…"></textarea></div>
-      <div class="btn-row"><button class="btn-c" id="nCancel">取消</button><button class="btn-p" id="nSave">保存</button></div>`,
+      <div class="field"><label>我的理解</label><textarea id="uText" placeholder="我对这段话形成了什么看法…"></textarea></div>
+      <div class="field"><label>主题标签（可选，逗号分隔）</label><input type="text" id="uTags" placeholder="如：臣服 / 行动"></div>
+      <div class="btn-row"><button class="btn-c" id="uCancel">取消</button><button class="btn-p" id="uSave">保存为理解</button></div>`,
     onOpen: (root) => {
-      root.querySelector('#nCancel').addEventListener('click', closeTopSheet);
-      root.querySelector('#nSave').addEventListener('click', async () => {
-        const content = root.querySelector('#noteText').value.trim();
-        if (!content) { toast('写点什么'); return; }
+      root.querySelector('#uCancel').addEventListener('click', closeTopSheet);
+      root.querySelector('#uSave').addEventListener('click', async () => {
+        const content = root.querySelector('#uText').value.trim();
+        if (!content) { toast('写点内容'); return; }
+        const tags = root.querySelector('#uTags').value.split(/[,，、]/).map(t => t.trim()).filter(Boolean);
         closeTopSheet();
-        await saveNote(quote, para);
+        await createInsight('我的理解', content, {
+          tags,
+          bookId: S.rBook ? S.rBook.id : null,
+          chapterId: S.rChapter ? S.rChapter.id : null,
+          paraNum: para, quote,
+        });
+        toast('已保存为理解');
       });
     },
   });
@@ -855,20 +857,27 @@ async function openCoRead(mode, quote, paraNum, local) {
 function newCoSession(mode, quote, paraNum, local) {
   const chapter = S.rChapter;
   const topic = mode === 'quote' ? `划线共读 · ${chapter.title}` : `整章共读 · ${chapter.title}`;
+  /* 只在内存里建会话；用户真正发出第一条消息时才落库生成话题，避免每次打开都产生空话题 */
   S.coSession = {
     id: 'sess_' + uid(),
     bookId: S.rBook.id, chapterId: chapter.id, chapterIdx: S.readerChapterIndex,
     paraNum: paraNum || 0, quote: quote || '', topic,
     msgs: [], createdAt: Date.now(), updatedAt: Date.now(),
+    persisted: false,
   };
-  upsert('sessions', S.coSession);
-  upsert('traces', {
-    id: 'tr_' + uid(), bookId: S.rBook.id, chapterId: chapter.id,
-    paraNum: paraNum || 0, type: 'coread', sessionId: S.coSession.id,
-    summary: quote ? quote.slice(0, 40) : chapter.title, ts: Date.now(),
+}
+/* 用户首次发送消息时，才把会话正式写入数据库并留下痕迹 */
+async function persistCoSession(s) {
+  if (s.persisted) return;
+  s.persisted = true;
+  await upsert('sessions', s);
+  const chapter = S.rChapters.find(c => c.id === s.chapterId) || null;
+  await upsert('traces', {
+    id: 'tr_' + uid(), bookId: s.bookId, chapterId: s.chapterId,
+    paraNum: s.paraNum || 0, type: 'coread', sessionId: s.id,
+    summary: s.quote ? s.quote.slice(0, 40) : (chapter ? chapter.title : ''), ts: Date.now(),
   });
-  addTimelineEvent(mode === 'quote' ? '开始共读一段原文' : '开始共读一章',
-    `${S.rBook.title} · ${chapter.title}${mode === 'quote' ? '「' + quote.slice(0, 30) + '」' : ''}`, 'coread');
+  addTimelineEvent('开始共读', `${S.rBook ? S.rBook.title : ''} · ${s.topic}`, 'coread', { bookId: s.bookId, chapterId: s.chapterId });
   updateAllTraces();
 }
 function renderCoHeader() {
@@ -892,8 +901,8 @@ function renderCoMsgs() {
   s.msgs.forEach(m => {
     if (m.kind === 'divider') { html += `<div class="sess-divider">${esc(m.label)}</div>`; return; }
     const isUser = m.role === 'user';
-    const qRef = m.quote ? `<div class="quote-ref">「${esc(m.quote.slice(0, 60))}」</div>` : '';
-    html += `<div class="msg ${isUser ? 'user' : 'ai'}">${qRef}${esc(m.text)}</div>`;
+    /* 原文已在「当前共读 · 原文」处统一引用，消息内不再重复引用 */
+    html += `<div class="msg ${isUser ? 'user' : 'ai'}">${esc(m.text)}</div>`;
     if (m.failed) html += `<button class="retry-btn" data-retry="1">↻ 重试这次共读</button>`;
   });
   el.innerHTML = html || '<div class="typing">说点什么，开始共读。</div>';
@@ -901,8 +910,11 @@ function renderCoMsgs() {
   el.querySelectorAll('.retry-btn').forEach(btn => btn.addEventListener('click', () => retryCoMessage()));
 }
 async function sendCoMessage(msgText) {
-  const s = S.coSession;
+  let s = S.coSession;
   if (!s || !msgText || S.generating) return;
+  /* 首次发送时才正式生成话题并落库 */
+  if (!s.persisted) await persistCoSession(s);
+  s = S.coSession;
   S.generating = true;
   $id('coSend').disabled = true;
   s.msgs.push({ role: 'user', text: msgText, quote: s.quote || '', at: Date.now() });
@@ -1358,24 +1370,43 @@ $id('coSaveQ').addEventListener('click', () => {
 $id('coSess').addEventListener('click', openSessionList);
 async function openSessionList() {
   const rows = await listData('sessions');
-  const mine = rows.filter(s => S.rBook && s.bookId === S.rBook.id).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 20);
+  const mine = rows.filter(s => S.rBook && s.bookId === S.rBook.id).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 30);
+  const firstMsg = (s) => {
+    const m = (s.msgs || []).find(x => x.role === 'user');
+    return m ? String(m.text).slice(0, 26) : '';
+  };
   openSheet({
     title: '共读话题',
     html: mine.length ? mine.map(s => `
-      <button class="row-btn" data-sid="${esc(s.id)}">
-        <b>${esc(s.topic)}</b><br>
-        <span style="font-size:11.5px;color:var(--ink-3);">${s.msgs.length} 轮 · ${timeAgo(s.updatedAt)}</span>
-      </button>`).join('') : '<div class="empty">还没有共读记录</div>',
+      <div class="sess-row" data-sid="${esc(s.id)}">
+        <div class="sess-main" data-open="${esc(s.id)}">
+          <div class="sess-t">${esc(s.topic)}</div>
+          <div class="sess-prev">${firstMsg(s) ? '「' + esc(firstMsg(s)) + (String((s.msgs||[]).find(x=>x.role==='user')?.text||'').length > 26 ? '…' : '') + '」' : '<span style="color:var(--ink-3);">（空会话）</span>'}</div>
+          <div class="sess-meta">${s.msgs.length} 轮 · ${timeAgo(s.updatedAt)}</div>
+        </div>
+        <button class="sess-del" data-del="${esc(s.id)}" aria-label="删除话题">✕</button>
+      </div>`).join('') : '<div class="empty">还没有共读记录</div>',
     onOpen: (root) => {
-      root.querySelectorAll('.row-btn[data-sid]').forEach(b => b.addEventListener('click', async () => {
+      root.querySelectorAll('.sess-main[data-open]').forEach(b => b.addEventListener('click', async () => {
         const all = await listData('sessions');
-        const found = all.find(x => x.id === b.dataset.sid);
+        const found = all.find(x => x.id === b.dataset.open);
         closeTopSheet();
         if (!found) return;
         S.coSession = found;
         $id('coDrawer').classList.add('open');
         renderCoHeader();
         renderCoMsgs();
+      }));
+      root.querySelectorAll('.sess-del[data-del]').forEach(b => b.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const sid = b.dataset.del;
+        const ok = await A.ui.confirm ? A.ui.confirm({ title: '删除话题', message: '删除后这次共读记录将不再保留。' }) : confirm('删除后这次共读记录将不再保留。');
+        if (!ok) return;
+        await removeById('sessions', sid);
+        toast('话题已删除');
+        closeTopSheet();
+        if (S.coSession && S.coSession.id === sid) S.coSession = null;
+        openSessionList();
       }));
     },
   });
@@ -2079,15 +2110,7 @@ async function init() {
   }
   await loadAll();
   await loadCoreadSettings();
-  /* 恢复上次阅读位置 */
-  try {
-    const st = (await listData('state')).find(s => s.id === 'reading');
-    if (st && st.bookId) {
-      const book = S.books.find(b => b.id === st.bookId);
-      /* 不传 paraTo：让 openReader 用书里的 currentParaNum + 视线滚动比例精确恢复 */
-      if (book) { await openReader(st.bookId, st.chapterId); return; }
-    }
-  } catch (e) {}
+  /* 打开 App 默认进入「书桌」，不再自动打开上次的阅读器 */
   renderDesk();
   /* 后台尝试改变分析（节流 7 天） */
   setTimeout(() => runChangeAnalysis(false), 2000);
