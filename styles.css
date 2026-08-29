@@ -156,13 +156,13 @@ input, textarea { font-family: inherit; }
 .reader-top {
   position: absolute; top: 0; left: 0; right: 0; z-index: 70;
   display: flex; align-items: center; justify-content: space-between;
-  padding: calc(var(--safe-t) - 44px) 10px 8px;
+  padding: calc(var(--safe-t) - 44px) calc(10px + var(--capsule-r, 74px)) 8px 10px;
   background: linear-gradient(rgba(251,249,245,.97) 70%, rgba(251,249,245,0));
   opacity: 0; pointer-events: none; transition: opacity .22s ease;
 }
 .reader.ui .reader-top { opacity: 1; pointer-events: auto; }
-.rbtn { width: 40px; height: 40px; border-radius: 50%; border: none; background: rgba(60,50,35,.06); color: var(--ink); font-size: 19px; display: flex; align-items: center; justify-content: center; }
-.r-chap { text-align: center; max-width: 55%; }
+.rbtn { width: 40px; height: 40px; border-radius: 50%; border: none; background: rgba(60,50,35,.06); color: var(--ink); font-size: 19px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.r-chap { text-align: center; max-width: 40%; }
 .r-chap #rChapTitle { display: block; font-size: 13px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .r-chap .r-progress { font-size: 10.5px; color: var(--ink-3); }
 .reader-scroll { position: absolute; top: 0; left: 0; right: 0; bottom: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
@@ -283,6 +283,20 @@ input, textarea { font-family: inherit; }
 .char-row .av { width: 40px; height: 40px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); display: flex; align-items: center; justify-content: center; font-size: 16px; }
 .import-status { font-size: 12.5px; color: var(--ink-2); margin: 8px 0; display: flex; align-items: center; gap: 7px; }
 .change-btn { display: block; width: 100%; padding: 12px; border: 1px dashed var(--line); border-radius: 11px; background: none; color: var(--accent); font-size: 13.5px; }
+
+/* 章节精炼卡片（书本层 UI） */
+.ch-summary-card { margin: 0 2px 24px; padding: 13px 15px; border-left: 3px solid var(--gold); background: #fffdf8; }
+.cs-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.cs-title { font-size: 11px; letter-spacing: 2px; color: var(--gold); font-weight: 600; }
+.cs-state { font-size: 10.5px; color: var(--ink-3); }
+.cs-body { font-size: 13px; line-height: 1.8; color: var(--ink-2); }
+.cs-text { white-space: pre-wrap; font-family: var(--font-serif); color: #5a4a30; }
+.cs-concepts { margin-top: 9px; font-size: 12px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.cs-concept { font-size: 11px; color: var(--accent); background: var(--gold-soft); border-radius: 100px; padding: 3px 11px; cursor: pointer; border: none; }
+.cs-actions { margin-top: 10px; display: flex; gap: 8px; }
+.cs-btn { padding: 6px 14px; border: 1px solid var(--line); border-radius: 100px; background: none; color: var(--ink-2); font-size: 12px; }
+.cs-btn:active { background: var(--surface-2); }
+.cs-empty { font-size: 12px; color: var(--ink-3); }
 
 /* 选择工具条 */
 .sel-bar { position: fixed; z-index: 95; display: none; gap: 2px; background: #2e2820; color: #efe8dd; border-radius: 11px; padding: 3px; box-shadow: 0 4px 18px rgba(0,0,0,.28); }

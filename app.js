@@ -53,6 +53,21 @@ function toast(msg, dur = 2200) {
   clearTimeout(_toastTimer);
   _toastTimer = setTimeout(() => t.classList.remove('show'), dur);
 }
+/* 通用二次确认弹窗：resolve(true/false)，confirmText 为确认按钮文案 */
+function uiConfirm(title, message, confirmText) {
+  return new Promise((resolve) => {
+    openSheet({
+      title: title || '确认',
+      html: `<div style="font-size:14px;line-height:1.8;color:var(--ink-2);margin-bottom:4px;">${esc(message || '确定要执行这个操作吗？')}</div>
+        <div class="btn-row"><button class="btn-c" id="uiCancel">取消</button><button class="btn-p" id="uiOk" style="background:var(--danger);">${esc(confirmText || '确定')}</button></div>`,
+      onOpen: (root, mask) => {
+        root.querySelector('#uiCancel').addEventListener('click', () => { closeTopSheet(); resolve(false); });
+        root.querySelector('#uiOk').addEventListener('click', () => { closeTopSheet(); resolve(true); });
+        mask.addEventListener('click', (e) => { if (e.target === mask) { closeTopSheet(); resolve(false); } }, { once: true });
+      },
+    });
+  });
+}
 function fmtDay(ts) { const d = new Date(ts); return `${d.getMonth() + 1}月${d.getDate()}日`; }
 function fmtFull(ts) {
   const d = new Date(ts);
@@ -111,6 +126,23 @@ async function removeById(col, id) {
   const rows = await listCol(col);
   const found = rows.find(r => r.data && r.data.id === id);
   if (found) await A.db.delete(col, found.id);
+}
+/* 按关联字段删除某条记录在「阅读痕迹」里的对应痕迹，并刷新痕迹 */
+async function removeTraceByRef(refKey, refVal) {
+  const rows = await listCol('traces', true);
+  for (const r of rows) {
+    if (r.data && r.data[refKey] === refVal) await A.db.delete('traces', r.id);
+  }
+  updateAllTraces();
+}
+/* 删除时间线里某条记录（可选限定 bookId，供删除记录时联动清理） */
+async function removeTimelineByText(text, opts) {
+  const rows = await listCol('timeline');
+  for (const r of rows) {
+    if (!r.data) continue;
+    const hit = opts && opts.bookId ? (r.data.bookId === opts.bookId && r.data.text === text) : (r.data.text === text);
+    if (hit) await A.db.delete('timeline', r.id);
+  }
 }
 async function listData(col) {
   const rows = await listCol(col);
@@ -171,9 +203,11 @@ function defaultCoset() {
     ctxMsgs: 10, memShort: 5, memLong: 3, card: '',
     smallApi: '',
     origLen: 2000,
+    summaryLen: 800,
     recall: { bookU: 3, bookQ: 2, crossU: 2, crossQ: 1 },
     includeSummary: true, includeCard: true, includeMsgs: true,
     includeMemShort: true, includeMemLong: true, includeCore: true,
+    includeCrossBook: true,
   };
 }
 async function loadCoreadSettings() {
@@ -189,6 +223,7 @@ async function loadCoreadSettings() {
       card: s.card != null ? s.card : d.card,
       smallApi: s.smallApi != null ? s.smallApi : '',
       origLen: s.origLen || d.origLen,
+      summaryLen: s.summaryLen || d.summaryLen,
       recall: Object.assign({}, d.recall, s.recall || {}),
       includeSummary: s.includeSummary != null ? s.includeSummary : true,
       includeCard: s.includeCard != null ? s.includeCard : true,
@@ -196,6 +231,7 @@ async function loadCoreadSettings() {
       includeMemShort: s.includeMemShort != null ? s.includeMemShort : true,
       includeMemLong: s.includeMemLong != null ? s.includeMemLong : true,
       includeCore: s.includeCore != null ? s.includeCore : true,
+      includeCrossBook: s.includeCrossBook != null ? s.includeCrossBook : true,
     };
   } else {
     S.coset = defaultCoset();
@@ -206,6 +242,7 @@ async function saveCoreadSettings() {
     id: 'coread', companionId: S.companionId,
     ctxMsgs: S.coset.ctxMsgs, memShort: S.coset.memShort, memLong: S.coset.memLong,
     card: S.coset.card, smallApi: S.coset.smallApi, origLen: S.coset.origLen,
+    summaryLen: S.coset.summaryLen,
     recall: S.coset.recall,
     includeSummary: S.coset.includeSummary, includeCard: S.coset.includeCard,
     includeMsgs: S.coset.includeMsgs, includeMemShort: S.coset.includeMemShort,
@@ -271,26 +308,51 @@ async function chapterSummary(ch) {
   if (ch.summary && ch.summaryAt) return ch.summary;
   return null;  // 未生成
 }
+/* 分块：把整章文本切成若干块（每块约 maxLen 字），返回块数组 */
+function chunkText(text, maxLen = 2600) {
+  const paras = parasOf(text);
+  const chunks = [];
+  let cur = [], curLen = 0;
+  for (const p of paras) {
+    const add = p.t.length + 2;
+    if (curLen + add > maxLen && cur.length) {
+      chunks.push(cur.map(x => x.t).join('\n'));
+      cur = []; curLen = 0;
+    }
+    cur.push(p); curLen += add;
+  }
+  if (cur.length) chunks.push(cur.map(x => x.t).join('\n'));
+  return chunks.length ? chunks : [text];
+}
+/* 合并局部摘要为最终章节精炼（小模型），供共读上下文快速定位 */
+async function mergeSummaryChunks(bookTitle, chTitle, chunks) {
+  const len = S.coset.summaryLen || 800;
+  const parts = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const part = await lightAIText(
+      '你是章节精炼助手。把一段章节原文压缩成一段局部摘要（要点式，保留核心内容/观点/论证结构/关键概念与关系），不要评价。',
+      `《${bookTitle}》「${chTitle}」第 ${i + 1}/${chunks.length} 块原文：\n${chunks[i]}`,
+      { apiConfigId: S.coset.smallApi, timeoutMs: 90000 }
+    );
+    if (part) parts.push(part);
+  }
+  if (!parts.length) return '';
+  if (parts.length === 1) return parts[0];
+  /* 多块 → 合并成最终精炼 */
+  const merged = await lightAIText(
+    '你是章节精炼助手。把若干局部摘要合并成一章的最终「精炼」，覆盖整章：核心内容、作者主要观点、论证/思想推进结构、重要概念之间的关系、前后观点承接修正或转折、对理解本章非常重要的上下文。按【本章核心内容】【作者主要观点】【论证/结构】【重要关系/上下文】组织，最后单独【概念】列术语及本书定义（无则写【概念】无）。只写精炼本身，不要评价。',
+    `《${bookTitle}》「${chTitle}」的局部摘要：\n${parts.join('\n---\n')}\n\n请合并为最终章节精炼，控制在约 ${len} 字。`,
+    { apiConfigId: S.coset.smallApi, timeoutMs: 120000 }
+  );
+  return merged;
+}
+/* 章节精炼：进入章节时若无精炼先生成（章节地图），覆盖整章（分块总结），长度可配 */
 async function generateChapterSummary(ch) {
-  // 精炼：每本书每章独立，由 AI 自动生成/更新（小模型），供共读上下文快速定位
   if (!ch || !ch.text || !S.companionId) return ch.summary || '';
   if (ch.summary && ch.summaryAt) return ch.summary;
   try {
-    const unit = extractUnit(ch.text, 0, 6000);
-    const text = await lightAIText(
-      '你是章节精炼助手。你的任务是把一章书压缩成「章节记忆」：主要给共读时的 AI 用极少的 token 快速知道这一章讲了什么。只做压缩与提取，不做评价。',
-      `这是《${S.rBook ? S.rBook.title : ''}》的一章原文（节选${unit.length < ch.text.length ? '，全文更长' : ''}）。请输出本章的「精炼」，包含：
-【本章核心内容】1-3 句
-【作者主要观点】1-2 句
-【论证/结构】1-2 句说明本章怎么展开
-【重要关系/上下文】如有则简要说明
-另外在末尾单独列出【概念】：
-- 术语：一句话定义（本书中的定义，不是个人理解）
-（无重要概念则写【概念】无）
-
-精炼要明显短于原文，控制在 200 字内，只写精炼本身。`,
-      { apiConfigId: S.coset.smallApi, timeoutMs: 90000 }
-    );
+    const chunks = chunkText(ch.text, 2600);
+    const text = await mergeSummaryChunks(S.rBook ? S.rBook.title : '', ch.title, chunks);
     if (text) {
       ch.summary = text;
       ch.summaryAt = Date.now();
@@ -302,6 +364,23 @@ async function generateChapterSummary(ch) {
     }
     return ch.summary || '';
   } catch (e) { console.warn('chapter summary failed', e); return ch.summary || ''; }
+}
+/* 章末可选更新：以完整章节为依据对已有精炼做更新/修正（不是第一次生成） */
+async function refreshChapterSummary(ch) {
+  if (!ch || !ch.text || !S.companionId) return ch.summary || '';
+  try {
+    const chunks = chunkText(ch.text, 2600);
+    const text = await mergeSummaryChunks(S.rBook ? S.rBook.title : '', ch.title, chunks);
+    if (text) {
+      ch.summary = text;
+      ch.summaryAt = Date.now();
+      const rows = await listCol('chapters');
+      const found = rows.find(r => r.data && r.data.id === ch.id);
+      if (found) await A.db.update('chapters', found.id, { ...found.data, summary: text, summaryAt: Date.now() });
+      await extractConceptsFromSummary(ch, text);
+    }
+    return ch.summary || '';
+  } catch (e) { console.warn('chapter summary refresh failed', e); return ch.summary || ''; }
 }
 /* 从章节精炼中解析【概念】区，提取书内概念入库（本书专属，不进跨书记忆） */
 async function extractConceptsFromSummary(ch, summaryText) {
@@ -399,6 +478,8 @@ async function renderDesk() {
   $id('p-desk').classList.add('active');
   $id('p-lib').classList.remove('active');
   $id('p-mind').classList.remove('active');
+  const pl = $id('p-life');
+  if (pl) pl.classList.remove('active');
   const reading = S.books.filter(b => b.lastReadAt).sort((a, b) => b.lastReadAt - a.lastReadAt).slice(0, 3);
   const latest = [...S.timeline].sort((a, b) => b.ts - a.ts)[0];
   let html = `<div class="h-row"><div><div class="h-page">书桌</div>
@@ -441,6 +522,8 @@ async function renderLib(groupId) {
   $id('p-lib').classList.add('active');
   $id('p-desk').classList.remove('active');
   $id('p-mind').classList.remove('active');
+  const pl = $id('p-life');
+  if (pl) pl.classList.remove('active');
   const cur = S.currentGroup || 'all';
   let filtered = S.books;
   if (cur !== 'all') {
@@ -503,6 +586,13 @@ async function openReader(bookId, chapterIdTo, paraTo) {
     const ch = S.rChapters[ci];
     S.rChapter = ch;
     $id('rChapTitle').textContent = ch ? ch.title : '';
+    /* 进入章节 → 章节预处理：若本章还没有精炼，后台预生成（章节地图），不重复生成 */
+    if (ch && !ch.summary) {
+      generateChapterSummary(ch).then(() => {
+        /* 若已进入共读且正在用本章，刷新一次上下文展示 */
+        if (S.coSession && S.coSession.chapterId === ch.id) renderCoHeader();
+      });
+    }
     /* 定位段落：paraTo / currentParaNum 一律按「全局段号」处理 */
     S.rParas = ch ? parasOf(ch.text) : [];
     const pBase = chapterParaStart(book, ch.id);
@@ -543,7 +633,8 @@ async function openReader(bookId, chapterIdTo, paraTo) {
 function renderChapter() {
   const inner = $id('rInner');
   if (!S.rChapter) { inner.innerHTML = '<div class="empty">这本书没有内容</div>'; return; }
-  inner.innerHTML = chapterTitleHtml(S.rChapter, S.readerChapterIndex) + renderParaBatch(S.rParas, 0, S.rMaxLoaded);
+  inner.innerHTML = chapterTitleHtml(S.rChapter, S.readerChapterIndex) + chapterSummaryCardHtml(S.rChapter) + renderParaBatch(S.rParas, 0, S.rMaxLoaded);
+  bindChapterSummaryCard();
   applyTraceDots();
   const sc = $id('rScroll');
   if (sc._deepreadBatch) { sc.removeEventListener('scroll', sc._deepreadBatch); sc._deepreadBatch = null; }
@@ -568,6 +659,48 @@ function renderChapter() {
 function chapterTitleHtml(ch, idx) {
   const label = idx >= 0 ? `第 ${idx + 1} 节` : '';
   return `<div class="chap-num">${esc(label)}</div><div class="chap-title">${esc(ch.title)}</div>`;
+}
+/* 章节精炼卡片（书本层 UI）：精炼 = 这一章讲了什么；概念 = 本章内部的重要概念；正文 = 原始内容。
+   自动生成 / 手动生成 / 手动更新都在这里。 */
+function chapterSummaryCardHtml(ch) {
+  if (!ch) return '';
+  const hasSummary = !!(ch.summary && ch.summaryAt);
+  const concepts = S.concepts ? S.concepts.filter(c => c.chapterId === ch.id) : [];
+  return `<div class="ch-summary-card card" data-summary-card="${esc(ch.id)}">
+    <div class="cs-head">
+      <span class="cs-title">章节精炼</span>
+      <span class="cs-state">${hasSummary ? '已生成' : '未生成'}</span>
+    </div>
+    ${hasSummary ? `<div class="cs-body"><div class="cs-text">${esc(ch.summary)}</div>
+      ${concepts.length ? `<div class="cs-concepts"><b>本章概念：</b>${concepts.map(c => `<span class="cs-concept" data-cid="${esc(c.id)}">${esc(c.term)}</span>`).join('')}</div>` : ''}
+      <div class="cs-actions"><button class="cs-btn" data-refresh="1">重新生成</button><button class="cs-btn cs-fold">收起</button></div></div>`
+      : `<div class="cs-body"><div class="cs-empty">进入本章时自动生成精炼，供共读时快速定位本章内容。</div>
+      <div class="cs-actions"><button class="cs-btn" data-gen="1">生成章节精炼</button></div></div>`}
+  </div>`;
+}
+function bindChapterSummaryCard() {
+  const card = $q('[data-summary-card]');
+  if (!card) return;
+  card.querySelector('[data-refresh]')?.addEventListener('click', async () => {
+    toast('正在重新生成章节精炼…');
+    await refreshChapterSummary(S.rChapter);
+    renderChapter();
+    toast('精炼已更新');
+  });
+  card.querySelector('[data-gen]')?.addEventListener('click', async () => {
+    toast('正在生成章节精炼…');
+    await generateChapterSummary(S.rChapter);
+    renderChapter();
+    toast('精炼已生成');
+  });
+  card.querySelector('.cs-fold')?.addEventListener('click', () => {
+    const b = card.querySelector('.cs-body');
+    if (b) b.style.display = b.style.display === 'none' ? '' : 'none';
+  });
+  card.querySelectorAll('.cs-concept[data-cid]').forEach(el => el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openConceptDetail(el.dataset.cid);
+  }));
 }
 function renderParaBatch(paras, from, to) {
   let html = '';
@@ -659,10 +792,14 @@ function checkChapterEnd() {
   if (next && atEnd) {
     chip.hidden = false;
     $id('rNextBtn').onclick = () => jumpReaderTo(next.id, 0);
-    /* 读完整章 → 后台自动生成章节精炼 + 概念（只做一次，静默失败） */
-    if (S.rChapter && !S.rChapter._summaryTriggered) {
-      S.rChapter._summaryTriggered = true;
-      generateChapterSummary(S.rChapter).then(() => {});
+    /* 读完整章 → 以完整章节为依据对已有精炼做更新/修正（节流：距上次生成>30s 才更新） */
+    if (S.rChapter && !S.rChapter._refreshTriggered) {
+      S.rChapter._refreshTriggered = true;
+      if (S.rChapter.summary && S.rChapter.summaryAt && Date.now() - S.rChapter.summaryAt > 30000) {
+        refreshChapterSummary(S.rChapter).then(() => {});
+      } else if (!S.rChapter.summary) {
+        generateChapterSummary(S.rChapter).then(() => {});
+      }
     }
   } else chip.hidden = true;
 }
@@ -755,19 +892,29 @@ async function openTraceDetail(traceId) {
   const rows = await listCol('traces', true);
   const trace = rows.map(r => r.data).find(t => t && t.id === traceId);
   if (!trace) return;
-  const lines = [];
-  if (trace.summary) lines.push('「' + trace.summary + '」');
-  if (trace.type === 'coread' && trace.sessionId) {
-    const sRows = await listCol('sessions');
-    const sess = sRows.map(r => r.data).find(s => s && s.id === trace.sessionId);
-    if (sess && sess.msgs) lines.push(`共读 ${sess.msgs.length} 条记录`);
-  } else if (trace.insightId) {
+  /* 直接跳转到对应内容的详情页，而非通用弹窗 */
+  if (trace.insightId) {
     const ins = S.insights.find(i => i.id === trace.insightId);
-    if (ins) lines.push('· ' + displayType(ins.type) + '：' + ins.text);
+    if (ins) { openInsightDetail(trace.insightId); return; }
   } else if (trace.questionId) {
     const q = S.questions.find(x => x.id === trace.questionId);
-    if (q) lines.push('悬题：' + q.text);
+    if (q) { openQuestionDetail(trace.questionId); return; }
+  } else if (trace.annotationId) {
+    openResonateDetail(trace.annotationId); return;
+  } else if (trace.type === 'coread' && trace.sessionId) {
+    const sRows = await listCol('sessions');
+    const sess = sRows.map(r => r.data).find(s => s && s.id === trace.sessionId);
+    if (sess && sess.msgs) {
+      S.coSession = sess;
+      $id('coDrawer').classList.add('open');
+      renderCoHeader();
+      renderCoMsgs();
+      return;
+    }
   }
+  /* 兜底：显示基本信息 */
+  const lines = [];
+  if (trace.summary) lines.push('「' + trace.summary + '」');
   openSheet({ title: '阅读痕迹', html: `<div style="font-size:13.5px;line-height:1.8;color:var(--ink-2);">${esc(lines.join('\n'))}</div>` });
 }
 
@@ -987,8 +1134,10 @@ function renderCoHeader() {
     q.hidden = false;
     q.innerHTML = '<span class="qlabel">当前共读 · 原文</span>' + esc(s.quote);
   } else {
+    /* 整章共读：只显示当前章节名，不显示整段文章内容 */
     q.hidden = false;
-    q.innerHTML = '<span class="qlabel">当前共读 · 原文</span>' + esc(extractUnit(S.rChapter.text, Math.max(0, S.rParaLocal), 500));
+    const chTitle = S.rChapter ? S.rChapter.title : '';
+    q.innerHTML = '<span class="qlabel">当前共读 · 章节</span>' + esc(chTitle);
   }
 }
 function renderCoMsgs() {
@@ -1176,25 +1325,48 @@ async function generateCoReply(userText, s) {
     cardText = (coset.card && coset.card.trim()) ? coset.card.trim() : DEFAULT_CARD;
     ctxLog.card = true;
   }
-  if (coset.includeMemCore && S.companionId) {
+  if (coset.includeCore && S.companionId) {
     try { const c = await A.memory.readCore({ characterId: S.companionId }); if (c && (c.items && c.items.length)) { memBlocks.push('【TA的核心记忆】\n' + (Array.isArray(c.items) ? c.items.map(x => x.content || x.text || String(x)).slice(0, coset.memLong).join('\n') : String(c).slice(0, 500))); ctxLog.core = true; } } catch (e) {}
   }
   if (coset.includeMemLong && S.companionId) {
     try { const l = await A.memory.readLongTerm({ characterId: S.companionId, query: userText.slice(0, 60) }); if (l && (l.items && l.items.length)) { memBlocks.push('【TA的长期记忆】\n' + (Array.isArray(l.items) ? l.items.slice(0, coset.memLong).map(x => x.content || x.text || String(x)).join('\n') : String(l).slice(0, 500))); ctxLog.memLong = true; } } catch (e) {}
   }
 
-  /* ② 当前章节：精炼 + 原文窗口 */
-  let summary = await chapterSummary(chapter);
-  if (!summary) summary = await generateChapterSummary(chapter);
-  if (summary) ctxLog.summary = true;
+  /* ② 当前章节：精炼 + 原文窗口（精炼可开关；关闭则不生成也不注入） */
+  let summary = '';
+  if (coset.includeSummary !== false) {
+    summary = await chapterSummary(chapter);
+    if (!summary) summary = await generateChapterSummary(chapter);
+    if (summary) ctxLog.summary = true;
+  }
 
-  /* ③ 本书其他章节 + ④ 跨书：三级检索（Session 开始时只跑一次） */
-  const recText = await buildRecall(userText + ' ' + (s.quote || ''), chapter, summary);
+  /* ③ 本书其他章节 + ④ 跨书：三级检索 —— 每个 Session 只检索一次，结果缓存复用。
+     若关闭全部跨书/召回开关则不注入任何召回。 */
+  let recText = '';
+  const recallOff = coset.includeCrossBook === false || (coset.recall && coset.recall.bookU === 0 && coset.recall.bookQ === 0 && coset.recall.crossU === 0 && coset.recall.crossQ === 0);
+  if (!recallOff) {
+    if (s && s.recall && s.recall.text) {
+      recText = s.recall.text;
+      ctxLog.bookU = s.recall.bookU || 0; ctxLog.bookQ = s.recall.bookQ || 0;
+      ctxLog.crossU = s.recall.crossU || 0; ctxLog.crossQ = s.recall.crossQ || 0;
+      ctxLog.concepts = s.recall.concepts || 0; ctxLog.sessions = s.recall.sessions || 0;
+    } else {
+      const rec = await buildRecall(userText + ' ' + (s.quote || ''), chapter, summary);
+      recText = rec.text;
+      if (s) {
+        s.recall = { text: rec.text, bookU: ctxLog.bookU, bookQ: ctxLog.bookQ, crossU: ctxLog.crossU, crossQ: ctxLog.crossQ, concepts: ctxLog.concepts, sessions: ctxLog.sessions };
+        if (s.persisted) await upsert('sessions', s);
+      }
+    }
+  }
 
-  /* 最近对话 */
-  const nMsg = Math.max(2, Math.min(80, parseInt(coset.ctxMsgs) || 10));
-  const recentMsgs = s.msgs.slice(-nMsg).map(m => `${m.role === 'user' ? '你' : 'AI'}：${m.text}`).join('\n');
-  ctxLog.msgs = Math.min(nMsg, s.msgs.length);
+  /* 最近对话（可开关） */
+  let recentMsgs = '';
+  if (coset.includeMsgs !== false) {
+    const nMsg = Math.max(2, Math.min(80, parseInt(coset.ctxMsgs) || 10));
+    recentMsgs = s.msgs.slice(-nMsg).map(m => `${m.role === 'user' ? '你' : 'AI'}：${m.text}`).join('\n');
+    ctxLog.msgs = Math.min(nMsg, s.msgs.length);
+  }
 
   const instruction = `你现在和「你」一起深读《${S.rBook.title}》，这一节是「${chapter.title}」。
 
@@ -1289,7 +1461,12 @@ async function buildRecall(currentText, chapter, summary) {
   const concepts = kept.filter(c => c.kind === '概念').slice(0, 2);
   const sessions = kept.filter(c => c.kind === '会话摘要').slice(0, 2);
   kept = [...bookU, ...bookQ, ...crossU, ...crossQ, ...concepts, ...sessions];
-  return recallToText(kept);
+  return {
+    text: recallToText(kept),
+    bookU: bookU.length, bookQ: bookQ.length,
+    crossU: crossU.length, crossQ: crossQ.length,
+    concepts: concepts.length, sessions: sessions.length,
+  };
 }
 /* 被动写入：AI 提出「可能值得保存」，用户确认后才写入 */
 function showSaveProposal(type, content, s) {
@@ -1377,6 +1554,37 @@ async function genInsightMeta(insight) {
     await updateInsight(insight.id, patch);
   } catch (e) {}
 }
+/* 保存问题后由小模型生成少量 metadata（关键词/主题/相关概念），失败静默 */
+async function genQuestionMeta(question) {
+  if (!question || question.metaDone) return;
+  try {
+    const text = await lightAIText(
+      '你是阅读助手。为读者的一条「问题」生成少量元数据，只输出三行：关键词（3-5个，顿号分隔）、主题（1-3个，顿号分隔）、相关概念（可空，顿号分隔）。不要输出其他内容。',
+      `问题：${question.text}${question.quote ? '\n原文：「' + question.quote.slice(0, 120) + '」' : ''}`,
+      { apiConfigId: S.coset.smallApi, timeoutMs: 30000 }
+    );
+    const k = text.match(/关键词[：:]\s*(.+)/);
+    const th = text.match(/主题[：:]\s*(.+)/);
+    const c = text.match(/相关概念[：:]\s*(.+)/);
+    const patch = {
+      keywords: k ? k[1].split(/[,，、\s]+/).map(s => s.trim()).filter(Boolean).slice(0, 5) : question.keywords,
+      theme: th ? th[1].split(/[,，、\s]+/).map(s => s.trim()).filter(Boolean).slice(0, 3) : question.theme,
+      relatedConcepts: c && c[1].trim() !== '无' && c[1].trim() ? c[1].split(/[,，、\s]+/).map(s => s.trim()).filter(Boolean).slice(0, 5) : [],
+      metaDone: true,
+    };
+    await updateQuestion(question.id, patch);
+  } catch (e) {}
+}
+async function updateQuestion(id, patch) {
+  const rows = await listCol('questions');
+  const found = rows.find(r => r.data && r.data.id === id);
+  if (!found) return;
+  const merged = { ...found.data, ...patch, updatedAt: Date.now() };
+  await A.db.update('questions', found.id, merged);
+  const idx = S.questions.findIndex(q => q.id === id);
+  if (idx >= 0) S.questions[idx] = merged;
+  return merged;
+}
 /* growth：把后续理解归入同一思想 */
 async function growInsight(parentId, type, text, anchor) {
   const parent = S.insights.find(i => i.id === parentId);
@@ -1418,6 +1626,7 @@ async function createQuestion(q) {
   addTimelineEvent('留下悬题', q.text, 'question', { bookId: q.bookId, chapterId: q.chapterId });
   S.questions.push(rec);
   updateAllTraces();
+  genQuestionMeta(rec).then(() => {});
 }
 /* ───────── 实践（生活层：信念 + 行动，用户主动填写） ───────── */
 async function createPractice(p) {
@@ -1579,22 +1788,50 @@ function openAnswerSheet(q) {
 /* ───────── Session Summary（小模型生成） ─────────
    Session 结束时生成一份简短「本次共读摘要」：讨论了什么、形成了哪些观点、
    出现了哪些问题、讨论发生了什么变化。不是 Insight，只压缩记录对话。 */
+/* 把完整对话转成文本（供摘要分块），每轮不截断关键内容 */
+function sessionMsgsText(s) {
+  return (s.msgs || []).map(m => `${m.role === 'user' ? '你' : 'AI'}：${m.text}`).join('\n');
+}
 async function generateSessionSummary(s) {
   if (!s || !s.msgs || !s.msgs.length) return;
   if (s.summary) return s.summary;
   try {
-    const recent = s.msgs.slice(-20).map(m => `${m.role === 'user' ? '你' : 'AI'}：${String(m.text).slice(0, 120)}`).join('\n');
-    const text = await lightAIText(
-      '你是共读摘要助手。给一段共读对话生成一份简短的「本次共读摘要」（3-5 句）：主要讨论了什么、用户形成了哪些观点、出现了哪些问题、讨论发生了什么变化。只压缩记录，不要评价用户。',
-      `共读话题：${s.topic}${s.quote ? '\n原文：「' + s.quote.slice(0, 80) + '」' : ''}\n\n对话：\n${recent}`,
-      { apiConfigId: S.coset.smallApi, timeoutMs: 60000 }
+    const full = sessionMsgsText(s);
+    /* 对话较长时分块生成局部摘要，再合并最终摘要（保留全程转折与未解问题） */
+    const maxChars = 9000;
+    let parts;
+    if (full.length <= maxChars) {
+      parts = [full];
+    } else {
+      const chunks = [];
+      let cur = '';
+      for (const line of full.split('\n')) {
+        if (cur.length + line.length > maxChars && cur) { chunks.push(cur); cur = ''; }
+        cur += line + '\n';
+      }
+      if (cur) chunks.push(cur);
+      parts = [];
+      for (let i = 0; i < chunks.length; i++) {
+        const p = await lightAIText(
+          '你是共读摘要助手。给一段共读对话生成局部摘要（要点式）：讨论了什么、用户形成了哪些观点、提出了什么问题、有什么转折。只压缩记录，不要评价。',
+          `共读话题：${s.topic}${s.quote ? '\n原文：「' + s.quote.slice(0, 80) + '」' : ''}\n\n第 ${i + 1}/${chunks.length} 段对话：\n${chunks[i]}`,
+          { apiConfigId: S.coset.smallApi, timeoutMs: 60000 }
+        );
+        if (p) parts.push(p);
+      }
+    }
+    if (!parts.length) return '';
+    const finalText = parts.length === 1 ? parts[0] : await lightAIText(
+      '你是共读摘要助手。把若干局部摘要合并成一份完整的「本次共读摘要」（4-8 句）：这次主要讨论了什么、用户形成了哪些理解、提出了什么问题、讨论发生了什么变化、最后留下什么未解决内容。只压缩记录，不要评价用户。',
+      `共读话题：${s.topic}\n局部摘要：\n${parts.join('\n---\n')}`,
+      { apiConfigId: S.coset.smallApi, timeoutMs: 90000 }
     );
-    if (text) {
-      s.summary = text;
+    if (finalText) {
+      s.summary = finalText;
       s.summaryAt = Date.now();
       await upsert('sessions', s);
     }
-    return text;
+    return finalText;
   } catch (e) { return ''; }
 }
 /* 结束时生成摘要（收起共读抽屉时触发一次） */
@@ -1674,9 +1911,11 @@ async function openSessionList() {
       root.querySelectorAll('.sess-del[data-del]').forEach(b => b.addEventListener('click', async (e) => {
         e.stopPropagation();
         const sid = b.dataset.del;
-        const ok = await A.ui.confirm ? A.ui.confirm({ title: '删除话题', message: '删除后这次共读记录将不再保留。' }) : confirm('删除后这次共读记录将不再保留。');
+        const ok = await uiConfirm('删除话题', '删除后这次共读记录将不再保留。', '删除');
         if (!ok) return;
         await removeById('sessions', sid);
+        /* 一并删除该会话在阅读器里的痕迹 */
+        await removeTraceByRef('sessionId', sid);
         toast('话题已删除');
         closeTopSheet();
         if (S.coSession && S.coSession.id === sid) S.coSession = null;
@@ -1692,12 +1931,15 @@ async function renderMind(filter) {
   $id('p-mind').classList.add('active');
   $id('p-desk').classList.remove('active');
   $id('p-lib').classList.remove('active');
+  const pl = $id('p-life');
+  if (pl) pl.classList.remove('active');
   await loadAll();
 
-  const typeTabs = [['all', '全部'], ...TYPE_ORDER.map(t => [t, TYPE_META[t].label])];
+  /* 思想页只保留「我与书的互动」三类：理解 / 问题 / 共鸣；
+     概念属于书本层（在书籍详情/章节精炼处看），实践与改变属于生活层（生活 tab）。 */
+  const typeTabs = [['all', '全部'], ['我的理解', '理解'], ['问题', '问题'], ['共鸣', '共鸣']];
   let html = `<div class="h-row"><div><div class="h-page">思想</div>
-    <div class="h-sub">这些书在我身上留下了什么</div></div>
-    <button class="h-btn" id="mindRecordPractice">＋实践</button></div>
+    <div class="h-sub">我与书的互动 · 理解 / 问题 / 共鸣</div></div></div>
     <div class="mind-tabs">${typeTabs.map(t => `<button data-f="${t[0]}" class="${S.mindFilter === t[0] ? 'active' : ''}">${t[1]}</button>`).join('')}</div>
     <div class="view-switch">
       <button id="vw-timeline" class="${S.mindView === 'timeline' ? 'active' : ''}">时间线</button>
@@ -1707,23 +1949,17 @@ async function renderMind(filter) {
   if (S.mindView === 'map') {
     html += renderMindMap();
   } else if (S.mindFilter === 'all') {
-    /* 时间线视图：先按时间看轨迹，再按类型分组 */
+    /* 时间线视图：先按时间看轨迹，再按三块分组（理解 / 问题 / 共鸣） */
     html += renderTimelineList();
-    const roots = S.insights.filter(i => i.rootId == null).sort((a, b) => b.growthAt - a.growthAt);
+    const roots = S.insights.filter(i => i.rootId == null && displayType(i.type) === '我的理解').sort((a, b) => b.growthAt - a.growthAt);
     const questions = S.questions.slice().sort((a, b) => b.createdAt - a.createdAt);
     const resonates = S.annotations.filter(a => a.type === 'resonate').sort((a, b) => b.createdAt - a.createdAt);
-    const concepts = S.concepts.filter(c => c.bookId != null).sort((a, b) => b.createdAt - a.createdAt);
-    const practices = (S.practices || []).slice().sort((a, b) => b.createdAt - a.createdAt);
-    const changes = (S.changes || []).slice().sort((a, b) => b.createdAt - a.createdAt);
     const groups = [
-      ['概念', '概念', '书本中的概念', concepts, renderConceptList],
-      ['理解', '我的理解', '你自己的理解', roots.filter(i => displayType(i.type) === '我的理解'), renderInsightList],
-      ['问题', '问题', '悬而未决', questions, renderQuestionList],
-      ['共鸣', '共鸣', '收藏的片段', resonates, renderResonateList],
-      ['实践', '实践', '书进入生活', practices, renderPracticeList],
-      ['改变', '改变', '长期变化', changes, renderChangeList],
+      ['理解', '我的理解', '我对书中内容形成的观点', roots, renderInsightList],
+      ['问题', '问题', '值得继续思考的开放问题', questions, renderQuestionList],
+      ['共鸣', '共鸣', '被某段文字击中的收藏', resonates, renderResonateList],
     ];
-    html += '<div class="section-label">按 层 次</div>';
+    html += '<div class="section-label">我 与 书</div>';
     for (const [label, typeKey, sub, list, fn] of groups) {
       html += `<div class="section-label">${esc(label)} <span style="font-weight:400;color:var(--ink-3);">${esc(sub)} · ${list.length}</span></div>`;
       html += list.length ? fn(list.slice(0, 5)) : '<div class="empty" style="padding:14px;">还没有</div>';
@@ -1735,15 +1971,6 @@ async function renderMind(filter) {
     html += resonates.length ? renderResonateList(resonates) : '<div class="empty">读到时收藏的共鸣会在这里</div>';
   } else if (S.mindFilter === '问题') {
     html += S.questions.length ? renderQuestionList(S.questions) : '<div class="empty">还没有悬题</div>';
-  } else if (S.mindFilter === '概念') {
-    const concepts = S.concepts.filter(c => c.bookId != null).sort((a, b) => b.createdAt - a.createdAt);
-    html += concepts.length ? renderConceptList(concepts) : '<div class="empty">章节精炼时会自动提取本书概念</div>';
-  } else if (S.mindFilter === '实践') {
-    const practices = (S.practices || []).slice().sort((a, b) => b.createdAt - a.createdAt);
-    html += practices.length ? renderPracticeList(practices) : '<div class="empty">实践是你主动记录的生活层内容</div>';
-  } else if (S.mindFilter === '改变') {
-    const changes = (S.changes || []).slice().sort((a, b) => b.createdAt - a.createdAt);
-    html += changes.length ? renderChangeList(changes) : '<div class="empty">长期积累后由周期分析提出，你确认后保存</div>';
   } else {
     const roots = S.insights.filter(i => i.rootId == null).sort((a, b) => b.growthAt - a.growthAt);
     const filtered = roots.filter(i => displayType(i.type) === S.mindFilter);
@@ -1751,6 +1978,44 @@ async function renderMind(filter) {
   }
   $id('mindBody').innerHTML = html;
   bindMindEvents();
+}
+
+/* ───────── 生活页（实践 + 改变，独立于思想） ─────────
+   实践 = 信念 + 行动，完全由用户主动填写；
+   改变 = 长期观察结果，由周期分析提出、用户确认后保存。
+   两者不属于「思想」，AI 不替用户制定实践方案。 */
+async function renderLife() {
+  S.tab = 'life';
+  setTabActive('life');
+  const pl = $id('p-life');
+  if (!pl) return;
+  pl.classList.add('active');
+  $id('p-desk').classList.remove('active');
+  $id('p-lib').classList.remove('active');
+  $id('p-mind').classList.remove('active');
+  await loadAll();
+  const practices = (S.practices || []).slice().sort((a, b) => b.createdAt - a.createdAt);
+  const changes = (S.changes || []).slice().sort((a, b) => b.createdAt - a.createdAt);
+  let html = `<div class="h-row"><div><div class="h-page">生活</div>
+    <div class="h-sub">书进入生活 · 实践 / 长期改变</div></div>
+    <button class="h-btn" id="lifeAddPractice">＋实践</button></div>`;
+
+  html += '<div class="section-label">实 践 <span style="font-weight:400;">· 信念 + 行动（你自己来定）</span></div>';
+  html += practices.length ? renderPracticeList(practices) : '<div class="empty">实践是你主动把阅读带进生活的记录<br>AI 不替你制定方案，从「＋实践」开始吧</div>';
+
+  html += '<div class="section-label">改 变 <span style="font-weight:400;">· 长期观察结果（周期分析提出，你确认后保存）</span></div>';
+  html += '<div style="margin:8px 0 6px;"><button class="change-btn" id="lifeRunChange">✧ 手动运行「改变」周期分析</button></div>';
+  html += changes.length ? renderChangeList(changes) : '<div class="empty">长期积累后，由周期分析提出可能发生的改变</div>';
+
+  pl.querySelector('#lifeBody').innerHTML = html;
+  const ap = pl.querySelector('#lifeAddPractice');
+  if (ap) ap.addEventListener('click', () => openPracticeSheet({ bookId: null }));
+  const rc = pl.querySelector('#lifeRunChange');
+  if (rc) rc.addEventListener('click', async () => { toast('开始分析…'); await runChangeAnalysis(true); toast('分析完成，如发现改变会出现在下方'); renderLife(); });
+  /* 实践 / 改变详情与确认 */
+  pl.querySelectorAll('.thought-item[data-pid]').forEach(el => el.addEventListener('click', () => openPracticeDetail(el.dataset.pid)));
+  pl.querySelectorAll('.thought-item[data-cid2]').forEach(el => el.addEventListener('click', () => openChangeDetail(el.dataset.cid2)));
+  pl.querySelectorAll('[data-confirm-c]').forEach(b => b.addEventListener('click', (e) => { e.stopPropagation(); confirmChange(b.dataset.confirmC); }));
 }
 
 /* 思想地图：主题标签作为索引的聚合视图 */
@@ -1782,11 +2047,6 @@ function renderMindMap() {
       html += `<button class="tag-node" data-t="${esc(t.name)}" style="font-size:${12 + Math.min(6, t.items.length)}px;">${esc(t.name)}<span class="cnt">${t.items.length}</span></button>`;
     }
     html += `</div>`;
-  }
-  /* 改变单列 */
-  const changes = (S.changes || []).slice().sort((a, b) => b.createdAt - a.createdAt);
-  if (changes.length) {
-    html += `<div class="section-label">改 变（长期形成的）</div>` + renderChangeList(changes);
   }
   return html;
 }
@@ -1943,8 +2203,6 @@ function bindMindEvents() {
   $qa('#mindBody .thought-item[data-pid]').forEach(el => el.addEventListener('click', () => openPracticeDetail(el.dataset.pid)));
   $qa('#mindBody .thought-item[data-cid2]').forEach(el => el.addEventListener('click', () => openChangeDetail(el.dataset.cid2)));
   $qa('#mindBody [data-confirm-c]').forEach(b => b.addEventListener('click', (e) => { e.stopPropagation(); confirmChange(b.dataset.confirmC); }));
-  const mrp = $id('mindRecordPractice');
-  if (mrp) mrp.addEventListener('click', () => openPracticeSheet({ bookId: S.rBook ? S.rBook.id : null }));
   $qa('#mindBody .mini-tag').forEach(t => t.addEventListener('click', (e) => {
     e.stopPropagation();
     openTopicSheet(t.dataset.t);
@@ -1994,9 +2252,13 @@ async function openInsightDetail(id) {
         openReader(book.id, root.chapterId, Math.max(0, root.paraNum || 0));
       });
       rootEl.querySelector('#delInsight')?.addEventListener('click', async () => {
+        const ok = await uiConfirm('删除理解', '删除后这条理解及其在书中的阅读痕迹、时间线记录将一并移除。', '删除');
+        if (!ok) return;
         closeTopSheet();
-        for (const g of growth) await removeById('insights', g.id);
+        for (const g of growth) { await removeById('insights', g.id); await removeTraceByRef('insightId', g.id); }
         await removeById('insights', id);
+        await removeTraceByRef('insightId', id);
+        await removeTimelineByText(root.text, root.bookId ? { bookId: root.bookId } : null);
         S.insights = await listData('insights');
         toast('已删除');
         renderMind();
@@ -2030,8 +2292,12 @@ async function openQuestionDetail(id) {
       });
       rootEl.querySelector('#answerQ')?.addEventListener('click', () => { closeTopSheet(); openAnswerSheet(q); });
       rootEl.querySelector('#delQ')?.addEventListener('click', async () => {
+        const ok = await uiConfirm('删除问题', '删除后这个问题及其在书中的阅读痕迹、时间线记录将一并移除。', '删除');
+        if (!ok) return;
         closeTopSheet();
         await removeById('questions', id);
+        await removeTraceByRef('questionId', id);
+        await removeTimelineByText(q.text, q.bookId ? { bookId: q.bookId } : null);
         S.questions = await listData('questions');
         toast('已删除');
         renderMind();
@@ -2059,8 +2325,11 @@ async function openResonateDetail(id) {
         openReader(book.id, a.chapterId, Math.max(0, a.paraNum || 0));
       });
       rootEl.querySelector('#delAnn')?.addEventListener('click', async () => {
+        const ok = await uiConfirm('取消共鸣收藏', '取消后这条共鸣及其在书中的阅读痕迹将一并移除。', '取消收藏');
+        if (!ok) return;
         closeTopSheet();
         await removeById('annotations', id);
+        await removeTraceByRef('annotationId', id);
         toast('已取消收藏');
         renderMind();
       });
@@ -2085,6 +2354,8 @@ async function openConceptDetail(id) {
     onOpen: (rootEl) => {
       rootEl.querySelector('#editConcept').addEventListener('click', () => { closeTopSheet(); openConceptEditSheet(c); });
       rootEl.querySelector('#delConcept').addEventListener('click', async () => {
+        const ok = await uiConfirm('删除概念', '删除后这个概念将从这本书中移除。', '删除');
+        if (!ok) return;
         closeTopSheet();
         await removeById('concepts', id);
         S.concepts = await listData('concepts');
@@ -2136,8 +2407,11 @@ async function openPracticeDetail(id) {
     onOpen: (rootEl) => {
       rootEl.querySelector('#editP').addEventListener('click', () => { closeTopSheet(); openPracticeSheet({ ...p, id: p.id, bookId: p.bookId }); });
       rootEl.querySelector('#delP').addEventListener('click', async () => {
+        const ok = await uiConfirm('删除实践', '删除后这条实践及其时间线记录将一并移除。', '删除');
+        if (!ok) return;
         closeTopSheet();
         await removeById('practices', id);
+        await removeTimelineByText(p.belief + (p.action ? ' → ' + p.action : ''), p.bookId ? { bookId: p.bookId } : null);
         S.practices = await listData('practices');
         toast('实践已删除');
         renderMind();
@@ -2161,6 +2435,8 @@ async function openChangeDetail(id) {
       const cfm = rootEl.querySelector('#cfmC');
       if (cfm) cfm.addEventListener('click', async () => { closeTopSheet(); await confirmChange(id); });
       rootEl.querySelector('#delC').addEventListener('click', async () => {
+        const ok = await uiConfirm('删除改变', '删除后这条改变记录将不再保留。', '删除');
+        if (!ok) return;
         closeTopSheet();
         await removeById('changes', id);
         S.changes = await listData('changes');
@@ -2171,19 +2447,19 @@ async function openChangeDetail(id) {
   });
 }
 
-/* 阅读中思想抽屉（不离开阅读页） */
+/* 阅读中思想抽屉（不离开阅读页）——只显示「理解」，问题/共鸣引导到思想页 */
 async function openMindDrawer() {
   await loadAll();
-  const roots = S.insights.filter(i => i.rootId == null).sort((a, b) => b.growthAt - a.growthAt).slice(0, 12);
+  const roots = S.insights.filter(i => i.rootId == null && displayType(i.type) === '我的理解').sort((a, b) => b.growthAt - a.growthAt).slice(0, 12);
   const bookRelevant = roots.filter(i => i.bookId === S.rBook.id);
   const list = bookRelevant.length ? bookRelevant : roots;
   openSheet({
     title: '这本书里我想到的',
     html: list.length ? list.map(i => `
       <button class="row-btn" data-iid="${esc(i.id)}">
-        <span style="font-size:10.5px;color:var(--gold);">${typeEm(displayType(i.type))} ${esc(displayType(i.type))}</span> ${esc(String(i.text).slice(0, 44))}
-      </button>`).join('') + `<div class="btn-row"><button class="btn-c" id="vmGoMind">去思想空间看全部</button></div>`
-      : '<div class="empty">这一本还没有留下什么</div>',
+        <span style="font-size:10.5px;color:var(--gold);">· 理解</span> ${esc(String(i.text).slice(0, 44))}
+      </button>`).join('') + `<div class="btn-row"><button class="btn-c" id="vmGoMind">去思想空间看理解 / 问题 / 共鸣</button></div>`
+      : '<div class="empty">这一本还没有留下什么<br>读到想明白的，划一段「理解」吧</div>',
     onOpen: (root) => {
       root.querySelectorAll('.row-btn[data-iid]').forEach(b => b.addEventListener('click', () => {
         const id = b.dataset.iid;
@@ -2236,8 +2512,12 @@ async function openBookDetail(bookId) {
       root.querySelectorAll('.grown-cell').forEach(c => c.addEventListener('click', () => {
         const t = c.dataset.type;
         closeTopSheet();
-        switchTab('mind');
-        renderMind(t);
+        if (t === '实践' || t === '改变') {
+          switchTab('life');
+        } else {
+          switchTab('mind');
+          renderMind(t);
+        }
       }));
       root.querySelectorAll('.mini-line[data-iid]').forEach(el => el.addEventListener('click', () => { closeTopSheet(); openInsightDetail(el.dataset.iid); }));
       root.querySelectorAll('.mini-line[data-ciid]').forEach(el => el.addEventListener('click', () => { closeTopSheet(); openConceptDetail(el.dataset.ciid); }));
@@ -2260,7 +2540,15 @@ function openBookMenu(bookId) {
       root.querySelector('#bmRead').addEventListener('click', () => { closeTopSheet(); openReader(bookId); });
       root.querySelector('#bmDetail').addEventListener('click', () => { closeTopSheet(); openBookDetail(bookId); });
       root.querySelector('#bmAddGroup').addEventListener('click', () => { closeTopSheet(); openAddToGroup(bookId); });
-      root.querySelector('#bmDelete').addEventListener('click', async () => { closeTopSheet(); await deleteBook(bookId); toast('已删除'); renderLib(); });
+      root.querySelector('#bmDelete').addEventListener('click', async () => {
+        closeTopSheet();
+        const ok = await uiConfirm('删除这本书', '删除后，这本书的原文、精炼、概念、共读记录、理解、问题、共鸣、实践、改变将一并移除。确定删除吗？', '删除');
+        if (!ok) return;
+        await deleteBook(bookId);
+        S.books = S.books.filter(x => x.id !== bookId);
+        toast('已删除');
+        renderLib();
+      });
     },
   });
 }
@@ -2268,8 +2556,23 @@ async function deleteBook(bookId) {
   await removeById('books', bookId);
   const chaps = await listCol('chapters', true);
   for (const c of chaps) { if (c.data && c.data.bookId === bookId) await A.db.delete('chapters', c.id); }
-  for (const col of ['traces', 'sessions', 'annotations', 'concepts', 'practices']) {
+  for (const col of ['traces', 'sessions', 'annotations', 'concepts', 'practices', 'questions', 'insights', 'timeline']) {
     for (const r of await listCol(col, true)) { if (r.data && r.data.bookId === bookId) await A.db.delete(col, r.id); }
+  }
+  /* 从所有书单中移除这本书 */
+  for (const g of S.groups) {
+    if ((g.bookIds || []).includes(bookId)) {
+      g.bookIds = g.bookIds.filter(x => x !== bookId);
+      await upsert('groups', g);
+    }
+  }
+  S.books = S.books.filter(x => x.id !== bookId);
+  /* 若正在读这本书，关闭阅读器 */
+  if (S.rBook && S.rBook.id === bookId) {
+    $id('reader').classList.remove('open');
+    $id('coDrawer').classList.remove('open');
+    document.body.style.overflow = '';
+    S.rBook = null; S.rChapter = null; S.coSession = null;
   }
 }
 function openAddToGroup(bookId) {
@@ -2290,16 +2593,74 @@ function openAddToGroup(bookId) {
 function openGroupEditor() {
   openSheet({
     title: '书单管理',
-    html: S.groups.map(g => `<div style="display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--line-soft);"><span style="flex:1;font-size:14px;">${esc(g.name)}（${(g.bookIds || []).length} 本）</span><button class="btn-c" data-delg="${esc(g.id)}" style="padding:6px 12px;border:none;border-radius:9px;font-size:12px;">删除</button></div>`).join('') + `
+    html: S.groups.length ? S.groups.map(g => `
+      <div style="display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--line-soft);">
+        <span style="flex:1;font-size:14px;">${esc(g.name)}（${(g.bookIds || []).length} 本）</span>
+        <button class="btn-c" data-editg="${esc(g.id)}" style="padding:6px 12px;border:none;border-radius:9px;font-size:12px;">管理</button>
+      </div>`).join('') : '<div class="empty">还没有书单</div>' + `
       <div style="display:flex;gap:8px;margin-top:12px;"><input id="newGName" placeholder="新书单名称" style="flex:1;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#f9f6f1;font-size:14px;outline:none;"><button class="btn-p" id="addG" style="border:none;border-radius:10px;padding:0 16px;">添加</button></div>`,
     onOpen: (root) => {
-      root.querySelectorAll('[data-delg]').forEach(b => b.addEventListener('click', async () => { closeTopSheet(); await removeById('groups', b.dataset.delg); S.groups = await listData('groups'); renderLib(); }));
+      root.querySelectorAll('[data-editg]').forEach(b => b.addEventListener('click', async () => { closeTopSheet(); openGroupDetail(b.dataset.editg); }));
       root.querySelector('#addG').addEventListener('click', async () => {
         const name = root.querySelector('#newGName').value.trim();
         if (!name) return;
         await upsert('groups', { id: 'g_' + uid(), name, bookIds: [] });
         S.groups = await listData('groups'); closeTopSheet(); renderLib();
       });
+    },
+  });
+}
+/* 单个书单详情：重命名 / 移除书 / 删除书单 */
+function openGroupDetail(groupId) {
+  const g = S.groups.find(x => x.id === groupId);
+  if (!g) return;
+  const books = S.books.filter(b => (g.bookIds || []).includes(b.id));
+  openSheet({
+    title: `书单 · ${g.name}`,
+    html: `
+      <div class="field"><label>重命名书单</label>
+        <div style="display:flex;gap:8px;"><input id="gName" value="${esc(g.name)}" style="flex:1;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#f9f6f1;font-size:14px;outline:none;"><button class="btn-p" id="gRename" style="border:none;border-radius:10px;padding:0 16px;flex-shrink:0;">重命名</button></div></div>
+      <div class="section-label">书单里的书（${books.length}）</div>
+      ${books.length ? books.map(b => `
+        <div style="display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--line-soft);">
+          <span style="flex:1;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(b.title)}</span>
+          <button class="btn-c" data-rmg="${esc(b.id)}" style="padding:5px 11px;border:none;border-radius:8px;font-size:11.5px;">移出</button>
+        </div>`).join('') : '<div class="empty">这个书单还没有书</div>'}
+      <div class="btn-row"><button class="btn-c" id="gDel" style="color:var(--danger);">删除书单</button></div>
+      <div class="btn-row"><button class="btn-c" id="gClose">关闭</button></div>`,
+    onOpen: (root) => {
+      root.querySelector('#gRename').addEventListener('click', async () => {
+        const name = root.querySelector('#gName').value.trim();
+        if (!name) { toast('名称不能为空'); return; }
+        g.name = name;
+        await upsert('groups', g);
+        S.groups = await listData('groups');
+        toast('已重命名');
+        closeTopSheet();
+        renderLib();
+      });
+      root.querySelectorAll('[data-rmg]').forEach(b => b.addEventListener('click', async () => {
+        const bid = b.dataset.rmg;
+        g.bookIds = (g.bookIds || []).filter(x => x !== bid);
+        await upsert('groups', g);
+        S.groups = await listData('groups');
+        const book = S.books.find(x => x.id === bid);
+        toast(book ? '已从书单移除「' + book.title + '」' : '已移除');
+        closeTopSheet();
+        renderLib();
+        openGroupDetail(groupId);
+      }));
+      root.querySelector('#gDel').addEventListener('click', async () => {
+        const ok = await uiConfirm('删除书单', '删除后这本书单将从书库移除（书本身不会被删除）。', '删除');
+        if (!ok) return;
+        await removeById('groups', groupId);
+        S.groups = await listData('groups');
+        if (S.currentGroup === groupId) S.currentGroup = 'all';
+        closeTopSheet();
+        toast('书单已删除');
+        renderLib();
+      });
+      root.querySelector('#gClose').addEventListener('click', closeTopSheet);
     },
   });
 }
@@ -2449,12 +2810,15 @@ function openCoreadSettings() {
   const coset = S.coset;
   const ctxOptions = [5, 10, 20, 40, 80];
   const origLenOptions = [500, 1000, 2000, 3000, 5000];
+  const summaryLenOptions = [300, 500, 800, 1200, 2000];
   const recallOptions = [1, 2, 3, 5, 8];
   const ctxHtml = `共读 · 上下文设置
     <div class="field"><label>最近对话条数</label>
       <div class="type-chips">${ctxOptions.map(n => `<button class="type-chip${coset.ctxMsgs === n ? ' sel' : ''}" data-n="${n}">${n}</button>`).join('')}</div></div>
     <div class="field"><label>原文窗口（每轮共读取多少字原文）</label>
       <div class="type-chips">${origLenOptions.map(n => `<button class="type-chip${coset.origLen === n ? ' sel' : ''}" data-ol="${n}">${n}字</button>`).join('')}</div></div>
+    <div class="field"><label>章节精炼长度（进入章节时生成，覆盖整章）</label>
+      <div class="type-chips">${summaryLenOptions.map(n => `<button class="type-chip${(coset.summaryLen || 800) === n ? ' sel' : ''}" data-sl="${n}">${n}字</button>`).join('')}</div></div>
     <div class="field"><label>共读角色浓缩卡</label>
       <textarea id="cardInput" placeholder="${esc(DEFAULT_CARD)}" style="min-height:80px;">${coset.card ? esc(coset.card) : ''}</textarea></div>
     <div class="field"><label>小模型 API 配置 ID（可选，用于精炼/概念提取/召回筛选/摘要等杂活；留空用默认 API）</label>
@@ -2471,12 +2835,14 @@ function openCoreadSettings() {
     <div class="field"><label>跨书问题 ≤</label>
       <div class="type-chips">${recallOptions.map(n => `<button class="type-chip${(coset.recall.crossQ || 1) === n ? ' sel' : ''}" data-rk="crossQ" data-rn="${n}">${n}</button>`).join('')}</div></div>`;
 
-  const memHtml = `记忆开关
+  const memHtml = `上下文开关
     <div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0;">
+      <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" id="ckSummary" ${coset.includeSummary ? 'checked' : ''}> 章节精炼</label>
+      <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" id="ckMsgs" ${coset.includeMsgs !== false ? 'checked' : ''}> 最近对话</label>
+      <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" id="ckCross" ${coset.includeCrossBook !== false ? 'checked' : ''}> 跨书召回</label>
+      <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" id="ckCard" ${coset.includeCard ? 'checked' : ''}> 人设卡</label>
       <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" id="ckCore" ${coset.includeCore ? 'checked' : ''}> 核心记忆</label>
       <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" id="ckLong" ${coset.includeMemLong ? 'checked' : ''}> 长期记忆</label>
-      <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" id="ckCard" ${coset.includeCard ? 'checked' : ''}> 人设卡</label>
-      <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" id="ckSummary" ${coset.includeSummary ? 'checked' : ''}> 章节精炼</label>
     </div>`;
 
   const ctxState = `本次共读上下文
@@ -2522,6 +2888,12 @@ function openCoreadSettings() {
         c.classList.add('sel');
         coset.origLen = parseInt(c.dataset.ol);
       }));
+      /* 精炼长度 */
+      root.querySelectorAll('.type-chip[data-sl]').forEach(c => c.addEventListener('click', () => {
+        root.querySelectorAll('.type-chip[data-sl]').forEach(x => x.classList.remove('sel'));
+        c.classList.add('sel');
+        coset.summaryLen = parseInt(c.dataset.sl);
+      }));
       /* 检索量 */
       root.querySelectorAll('.type-chip[data-rk]').forEach(c => c.addEventListener('click', () => {
         const key = c.dataset.rk;
@@ -2539,6 +2911,8 @@ function openCoreadSettings() {
         coset.includeMemLong = root.querySelector('#ckLong').checked;
         coset.includeCard = root.querySelector('#ckCard').checked;
         coset.includeSummary = root.querySelector('#ckSummary').checked;
+        coset.includeMsgs = root.querySelector('#ckMsgs').checked;
+        coset.includeCrossBook = root.querySelector('#ckCross').checked;
         await saveCoreadSettings();
         closeTopSheet();
         toast('已保存');
@@ -2591,6 +2965,7 @@ function switchTab(tab) {
   S.tab = tab;
   if (tab === 'desk') renderDesk();
   else if (tab === 'lib') renderLib();
+  else if (tab === 'life') renderLife();
   else renderMind();
 }
 $qa('.tabbar button').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
