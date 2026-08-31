@@ -111,7 +111,9 @@ input, textarea { font-family: inherit; }
 .thought-item .growth { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); }
 .thought-item .growth .g-row { font-size: 12px; color: var(--ink-2); line-height: 1.65; padding: 2px 0; }
 .q-item { padding: 14px 16px; margin-bottom: 10px; cursor: pointer; border-left: 2px solid var(--q-blue); }
+.q-item.carrying { border-left-color: var(--gold); background: #fffdf8; }
 .q-item .bd { font-size: 14.5px; line-height: 1.6; }
+.carry-tag { display: inline-block; font-size: 10.5px; color: #8a6a2f; background: var(--gold-soft); border: 1px solid #eedfc4; border-radius: 100px; padding: 2px 9px; margin: 6px 0 2px; letter-spacing: .5px; }
 .q-item .ans { margin-top: 9px; padding: 9px 11px; background: #f6f2ea; border-radius: 9px; font-size: 12.5px; line-height: 1.6; color: var(--ink-2); }
 .q-item .mt { font-size: 11px; color: var(--ink-3); margin-top: 7px; }
 .resonate-item { padding: 14px 16px; margin-bottom: 10px; cursor: pointer; }
@@ -201,6 +203,26 @@ input, textarea { font-family: inherit; }
 .chip-nav { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(var(--safe-b) + 92px); z-index: 71; }
 .chip-nav button { padding: 8px 18px; border: 1px solid var(--line); border-radius: 100px; background: rgba(255,255,255,.94); color: var(--ink-2); font-size: 12.5px; box-shadow: var(--shadow-1); }
 
+/* 4.0 携带问题胶囊 */
+.r-carry {
+  position: absolute; top: calc(var(--safe-t) + 26px); left: 0; right: 0; z-index: 69;
+  display: flex; align-items: center; gap: 6px; overflow-x: auto;
+  padding: 2px 14px; background: rgba(251,249,245,.92);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line-soft);
+  min-height: 32px; scrollbar-width: none;
+}
+.r-carry::-webkit-scrollbar { display: none; }
+.r-carry .carry-item {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 10px; border-radius: 100px; background: var(--gold-soft);
+  border: 1px solid #eedfc4; color: #5a4a30; font-size: 11px; white-space: nowrap;
+  cursor: pointer; flex-shrink: 0;
+}
+.r-carry .carry-item:active { background: #e8dcc4; }
+.r-carry .carry-label { font-size: 10px; color: var(--ink-3); letter-spacing: .5px; flex-shrink: 0; }
+.reader.has-carry .reader-inner { padding-top: calc(var(--safe-t) + 66px); }
+
 /* 共读抽屉 */
 .co-drawer {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 90;
@@ -210,6 +232,8 @@ input, textarea { font-family: inherit; }
   transform: translateY(102%); transition: transform .32s cubic-bezier(.32,.72,0,1);
 }
 .co-drawer.open { transform: translateY(0); }
+/* 4.0 划线共读：抽屉降矮，露出上方原文，实现「在读中谈」 */
+.co-drawer.quote-mode { height: 58dvh; }
 .co-grab { width: 34px; height: 4px; border-radius: 2px; background: #ddd6ca; margin: 8px auto 4px; }
 .co-head { display: flex; align-items: center; gap: 10px; padding: 6px 16px 10px; border-bottom: 1px solid var(--line-soft); flex-shrink: 0; }
 .co-avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }

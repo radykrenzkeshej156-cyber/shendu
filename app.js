@@ -586,6 +586,8 @@ async function openReader(bookId, chapterIdTo, paraTo) {
     const ch = S.rChapters[ci];
     S.rChapter = ch;
     $id('rChapTitle').textContent = ch ? ch.title : '';
+    /* 4.0 渲染携带问题胶囊 */
+    renderCarryBar();
     /* 进入章节 → 章节预处理：若本章还没有精炼，后台预生成（章节地图），不重复生成 */
     if (ch && !ch.summary) {
       generateChapterSummary(ch).then(() => {
@@ -926,7 +928,8 @@ function buildSelBar() {
     <button data-act="coread">共读</button>
     <button data-act="resonate">共鸣</button>
     <button data-act="question">悬题</button>
-    <button data-act="understand">理解</button>`;
+    <button data-act="understand">理解</button>
+    <button data-act="practice">实践</button>`;
   bar.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
     const act = b.dataset.act;
     hideSelBar();
@@ -965,6 +968,7 @@ function handleSelAction(act) {
   else if (act === 'resonate') saveResonate(text, para);
   else if (act === 'question') openQuestionSheet({ bookId: S.rBook ? S.rBook.id : null, chapterId: chapId, paraNum: para, quote: text, local });
   else if (act === 'understand') openUnderstandSheet(text, para);
+  else if (act === 'practice') openPracticeSheet({ bookId: S.rBook ? S.rBook.id : null, chapterId: chapId, paraNum: para, quote: text });
 }
 /* 共鸣：用户主动收藏，不做 AI 判断 */
 async function saveResonate(quote, para) {
@@ -1094,7 +1098,11 @@ async function openCoRead(mode, quote, paraNum, local) {
   if (!ok) return;
   if (!S.rChapter) { toast('请先打开一本书'); return; }
   newCoSession(mode, quote, paraNum, local);
-  $id('coDrawer').classList.add('open');
+  /* 4.0：划线共读时抽屉降矮，正文留在视野上方——「在读中谈」，而不是挡住书 */
+  const drawer = $id('coDrawer');
+  drawer.classList.toggle('quote-mode', mode === 'quote');
+  drawer.classList.add('open');
+  if (mode === 'quote' && local >= 0) scrollToLocalPara(local);
   updateCompanionAvatar();
   renderCoHeader();
   renderCoMsgs();
@@ -1226,12 +1234,29 @@ async function retryCoMessage() {
 function recordTags(rec) { return Array.isArray(rec.tags) ? rec.tags : []; }
 function recordKeywords(rec) { return Array.isArray(rec.keywords) ? rec.keywords : []; }
 function recordTheme(rec) { return Array.isArray(rec.theme) ? rec.theme : []; }
+/* 4.0：中文 3~4 字连续片段，用于正文重叠匹配（轻量、无需向量模型） */
+function extractSegs(text, n) {
+  const out = new Set();
+  const s = String(text || '').replace(/[\s，。！？、；：""''（）\n]/g, '');
+  if (s.length <= n) { if (s) out.add(s); return [...out]; }
+  for (let i = 0; i + n <= s.length; i++) out.add(s.slice(i, i + n));
+  return [...out];
+}
 function matchScore(rec, currentText) {
   let score = 0;
   const text = String(currentText || '');
   for (const t of recordTags(rec)) if (text.includes(t)) score += 3;
   for (const k of recordKeywords(rec)) if (text.includes(k)) score += 2;
   for (const th of recordTheme(rec)) if (text.includes(th)) score += 2;
+  /* 4.0：记录正文（理解/问题/摘要）与当前讨论的文本重叠——
+     这样 Session Summary 这类没有关键词的记录也能被召回（原来只比对 tags，永远命中不了） */
+  const body = String(rec.text || '');
+  if (body.length > 8) {
+    for (const seg of extractSegs(text, 3)) {
+      if (body.includes(seg)) score += 1;
+      if (score > 12) break;
+    }
+  }
   return score;
 }
 /* 第一级：metadata 初筛，返回「编号目录」（不让主模型直接读全文） */
@@ -1304,7 +1329,7 @@ function recallToText(kept) {
 
 /* ───────── 共读 AI 生成（透明可配置上下文 + 三级检索 + 严格沉淀规则） ───────── */
 /* 记录本次共读 AI 实际看到的上下文（供「本次共读上下文」查看） */
-function emptyCtxLog() { return { origLen: 0, summary: false, bookU: 0, bookQ: 0, crossU: 0, crossQ: 0, concepts: 0, sessions: 0, card: false, msgs: 0, memShort: false, memLong: false, core: false, tokenEst: 0 }; }
+function emptyCtxLog() { return { origLen: 0, summary: false, bookU: 0, bookQ: 0, crossU: 0, crossQ: 0, concepts: 0, sessions: 0, card: false, msgs: 0, memShort: false, memLong: false, core: false, carried: 0, tokenEst: 0 }; }
 let ctxLog = emptyCtxLog();
 function resetCtxLog() { ctxLog = emptyCtxLog(); }
 async function generateCoReply(userText, s) {
@@ -1368,6 +1393,14 @@ async function generateCoReply(userText, s) {
     ctxLog.msgs = Math.min(nMsg, s.msgs.length);
   }
 
+  /* 4.0：用户「带着的问题」——新读到的内容优先去回应它们（跨书核心通道） */
+  const carried = carriedQuestions();
+  let carriedText = '';
+  if (carried.length) {
+    carriedText = carried.map((q, i) => `${i + 1}. ${q.text}${q.bookId && q.bookId !== S.rBook.id ? '（来自另一本书，仍在悬着）' : ''}`).join('\n');
+    ctxLog.carried = carried.length;
+  }
+
   const instruction = `你现在和「你」一起深读《${S.rBook.title}》，这一节是「${chapter.title}」。
 
 【共读者人设卡】（这是你本场对话的身份与方式，代替完整角色背景）
@@ -1381,6 +1414,8 @@ ${unit}
 ${summary ? '【本节精炼（供快速定位上下文）】\n' + summary + '\n' : ''}
 
 ${recText ? '【TA的相关记录（智能召回的少量内容，仅作参考，若有关系再提）】\n' + recText + '\n' : ''}
+
+${carriedText ? '【TA正带着的问题（在读中想继续想下去的；若当前内容与之有关请主动呼应，无关不必硬提）】\n' + carriedText + '\n' : ''}
 
 【最近对话】
 ${recentMsgs}
@@ -1614,7 +1649,10 @@ async function createQuestion(q) {
     keywords: tags.slice(0, 3),
     bookId: q.bookId, chapterId: q.chapterId,
     paraNum: q.paraNum || 0, quote: q.quote || '',
-    status: 'open', answerText: '', answeredAt: null, createdAt: Date.now(),
+    /* 4.0：问题是一条生命线，不是一次性 FAQ。
+       status 不再有终局；answers 累积每次回应；carrying 表示「带着它继续读」。 */
+    status: 'open', answers: [], answerText: '', answeredAt: null,
+    carrying: false, createdAt: Date.now(),
   };
   await upsert('questions', rec);
   await upsert('traces', {
@@ -1753,24 +1791,85 @@ function openQuestionSheet(init) {
     },
   });
 }
-/* 悬题回应 → 转化为我的理解 */
-async function convertQuestionToInsight(q) {
-  await createInsight('我的理解', q.answerText || q.text, {
+/* 4.0 悬题回应：追加到问题的生命线上，同时沉淀为一条「我的理解」。
+   问题不设终局——每次阅读/生活都可能带来新的回应，全部累积。 */
+async function addQuestionAnswer(q, text) {
+  const content = (text || q.answerText || '').trim();
+  if (!content) return false;
+  if (!Array.isArray(q.answers)) q.answers = [];
+  q.answers.push({ text: content, at: Date.now() });
+  q.answerText = content;
+  q.answeredAt = Date.now();
+  q.status = 'open';  // 一直悬着，等下一次回应
+  await upsert('questions', q);
+  await createInsight('我的理解', content, {
     tags: q.tags || [],
     bookId: q.bookId, chapterId: q.chapterId, paraNum: q.paraNum, quote: q.quote,
   });
-  q.status = 'answered';
-  q.answeredAt = Date.now();
-  await upsert('questions', q);
-  addTimelineEvent('悬题有了回应', `${q.text} → ${q.answerText || '（已想通）'}`, 'question');
+  addTimelineEvent('旧问题收到新回应', `${q.text} → ${content}`, 'question', { bookId: q.bookId, chapterId: q.chapterId });
   return true;
+}
+/* 4.0 携带问题：把问题「带着」继续读，阅读器顶部会出现胶囊，共读时作为上下文注入。 */
+async function toggleCarryQuestion(id, carrying) {
+  const rows = await listCol('questions');
+  const found = rows.find(r => r.data && r.data.id === id);
+  if (!found) return false;
+  found.data.carrying = !!carrying;
+  await A.db.update('questions', found.id, found.data);
+  const idx = S.questions.findIndex(x => x.id === id);
+  if (idx >= 0) S.questions[idx] = found.data;
+  toast(carrying ? '已带着它继续读' : '不再带着它读了');
+  return true;
+}
+function carriedQuestions() {
+  return (S.questions || []).filter(q => q.carrying).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+/* 4.0 阅读器顶部携带问题胶囊：显示正带着的问题，点击可查看该问题 */
+async function renderCarryBar() {
+  const bar = $id('rCarryBar');
+  if (!bar) return;
+  const carried = carriedQuestions();
+  if (!carried.length) {
+    bar.hidden = true; bar.innerHTML = '';
+    $id('reader').classList.remove('has-carry');
+    return;
+  }
+  bar.hidden = false;
+  $id('reader').classList.add('has-carry');
+  bar.innerHTML = '<span class="carry-label">带着</span>' + carried.slice(0, 3).map(q =>
+    `<button class="carry-item" data-qid="${esc(q.id)}">✈ ${esc(String(q.text).slice(0, 16))}${q.text.length > 16 ? '…' : ''}</button>`
+  ).join('') + (carried.length > 3 ? '<button class="carry-item" id="carryMore">+更多</button>' : '');
+  bar.querySelectorAll('.carry-item[data-qid]').forEach(b => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleReaderUI(false);
+    openQuestionDetail(b.dataset.qid);
+  }));
+  const more = bar.querySelector('#carryMore');
+  if (more) more.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleReaderUI(false);
+    openCarryList();
+  });
+}
+function openCarryList() {
+  const carried = carriedQuestions();
+  openSheet({
+    title: '正带着的问题',
+    html: carried.length ? carried.map(q => {
+      const book = S.books.find(b => b.id === q.bookId);
+      return `<div class="row-btn" data-qid="${esc(q.id)}"><span style="color:var(--gold);font-size:10px;">✈ 带着</span> ${esc(q.text)}<div style="font-size:11px;color:var(--ink-3);margin-top:3px;">${book ? esc(book.title) : '无出处'} · 悬着</div></div>`;
+    }).join('') : '<div class="empty">现在没有带着的问题<br>去「思想 → 问题」把想继续想下去的设为带着读</div>',
+    onOpen: (root) => {
+      root.querySelectorAll('.row-btn[data-qid]').forEach(b => b.addEventListener('click', () => { closeTopSheet(); openQuestionDetail(b.dataset.qid); }));
+    },
+  });
 }
 function openAnswerSheet(q) {
   openSheet({
     title: '这个悬题，你怎么想？',
     html: `
       <div class="field"><div style="font-size:13.5px;line-height:1.7;color:var(--ink);">${esc(q.text)}</div></div>
-      <div class="field"><label>我的回应</label><textarea id="qAns" placeholder="此刻你是怎么想的…">${q.answerText ? esc(q.answerText) : ''}</textarea></div>
+      <div class="field"><label>我的回应（新的一次想法）</label><textarea id="qAns" placeholder="此刻你是怎么想的…"></textarea></div>
       <div class="btn-row"><button class="btn-c" id="qCancel">取消</button><button class="btn-p" id="qSave">留下回应，沉淀为「我的理解」</button></div>`,
     onOpen: (root) => {
       root.querySelector('#qCancel').addEventListener('click', closeTopSheet);
@@ -1778,8 +1877,8 @@ function openAnswerSheet(q) {
         const text = root.querySelector('#qAns').value.trim();
         if (!text) { toast('写点内容'); return; }
         closeTopSheet();
-        await convertQuestionToInsight(Object.assign({}, q, { answerText: text }));
-        toast('已回应，并沉淀为你的一条理解');
+        await addQuestionAnswer(q, text);
+        toast('回应已留下，这条问题继续悬着');
       });
     },
   });
@@ -1842,6 +1941,21 @@ async function finalizeCoSession() {
   }
 }
 
+/* 4.0 刷新共读位置：让会话原文窗口跟随当前阅读段落，携带的问题同步刷新。 */
+async function refreshCoPosition() {
+  const s = S.coSession;
+  if (!s || !S.rChapter) { toast('没有活跃的共读会话'); return; }
+  const base = chapterParaStart(S.rBook, S.rChapter.id);
+  const local = Math.max(0, S.rParaLocal);
+  s.paraNum = base + local;
+  s.quote = '';
+  /* 清除旧召回缓存，下次消息会重建 */
+  if (s.recall) delete s.recall;
+  if (s.persisted) await upsert('sessions', s);
+  renderCoHeader();
+  toast(`位置已刷新到当前段落`);
+}
+
 /* ───────── 共读抽屉事件 ───────── */
 $id('coClose').addEventListener('click', () => { finalizeCoSession(); $id('coDrawer').classList.remove('open'); });
 $id('coSend').addEventListener('click', () => {
@@ -1858,13 +1972,14 @@ $id('coSaveQ').addEventListener('click', () => {
   openQuestionSheet({ bookId: S.rBook.id, chapterId: S.rChapter.id, paraNum: S.rParaCur, quote: S.coSession ? S.coSession.quote : '' });
 });
 $id('coSess').addEventListener('click', openSessionList);
+$id('coRefresh').addEventListener('click', refreshCoPosition);
 /* 本次共读上下文查看入口：透明展示这一轮 AI 实际看到了什么 */
 $id('coCtx').addEventListener('click', openCtxView);
 function openCtxView() {
   const l = ctxLog;
   const row = (label, v) => `<div style="display:flex;justify-content:space-between;padding:7px 2px;border-bottom:1px solid var(--line-soft);font-size:13.5px;"><span>${label}</span><span style="color:${v ? 'var(--accent)' : 'var(--ink-3)'};">${v ? '✓' : '✗'}</span></div>`;
   const detail = l.origLen > 0
-    ? row('当前原文', `✓ ${l.origLen}字`) + row('章节精炼', l.summary) + row('本章相关理解', `✓ ${l.bookU}条`) + row('本章相关问题', `✓ ${l.bookQ}条`) + row('其他章节', l.crossU > 0 || l.crossQ > 0 ? '✓' : false) + row('跨书', (l.crossU + l.crossQ) > 0 ? `✓ ${l.crossU + l.crossQ}条` : false) + row('概念引用', l.concepts > 0 ? `✓ ${l.concepts}条` : false) + row('角色浓缩人设', l.card) + row('最近对话', `✓ ${l.msgs}条`) + row('核心记忆', l.core) + row('长期记忆', l.memLong) + row('预估 token', `~${l.tokenEst}`)
+    ? row('当前原文', `✓ ${l.origLen}字`) + row('章节精炼', l.summary) + row('本章相关理解', `✓ ${l.bookU}条`) + row('本章相关问题', `✓ ${l.bookQ}条`) + row('其他章节', l.crossU > 0 || l.crossQ > 0 ? '✓' : false) + row('跨书', (l.crossU + l.crossQ) > 0 ? `✓ ${l.crossU + l.crossQ}条` : false) + row('概念引用', l.concepts > 0 ? `✓ ${l.concepts}条` : false) + row('角色浓缩人设', l.card) + row('最近对话', `✓ ${l.msgs}条`) + row('核心记忆', l.core) + row('长期记忆', l.memLong) + row('带着的问题', l.carried > 0 ? `✓ ${l.carried}条` : false) + row('预估 token', `~${l.tokenEst}`)
     : '<div class="empty">开始一次共读后，这里会展示<br>AI 每一轮实际看到的上下文</div>';
   openSheet({
     title: '本次共读上下文',
@@ -1949,23 +2064,36 @@ async function renderMind(filter) {
   if (S.mindView === 'map') {
     html += renderMindMap();
   } else if (S.mindFilter === 'all') {
-    /* 时间线视图：先按时间看轨迹，再按三块分组（理解 / 问题 / 共鸣） */
-    html += renderTimelineList();
+    /* 4.0 思想页信息优先级：悬而未决的问题（含正携带的）置顶——这是空间的主角；
+       理解按生命线陈列（一条理解 + 它的再想/修正）；时间线降级为次级视图；共鸣单列。 */
     const roots = S.insights.filter(i => i.rootId == null && displayType(i.type) === '我的理解').sort((a, b) => b.growthAt - a.growthAt);
     const questions = S.questions.slice().sort((a, b) => b.createdAt - a.createdAt);
     const resonates = S.annotations.filter(a => a.type === 'resonate').sort((a, b) => b.createdAt - a.createdAt);
-    const groups = [
-      ['理解', '我的理解', '我对书中内容形成的观点', roots, renderInsightList],
-      ['问题', '问题', '值得继续思考的开放问题', questions, renderQuestionList],
-      ['共鸣', '共鸣', '被某段文字击中的收藏', resonates, renderResonateList],
-    ];
-    html += '<div class="section-label">我 与 书</div>';
-    for (const [label, typeKey, sub, list, fn] of groups) {
-      html += `<div class="section-label">${esc(label)} <span style="font-weight:400;color:var(--ink-3);">${esc(sub)} · ${list.length}</span></div>`;
-      html += list.length ? fn(list.slice(0, 5)) : '<div class="empty" style="padding:14px;">还没有</div>';
-      if (list.length > 5) html += `<button class="more-link" data-f="${typeKey}">看全部 ${list.length} 条 →</button>`;
+    const carrying = questions.filter(q => q.carrying);
+    const open = questions.filter(q => !q.carrying);
+    /* 主角：问题（携带的在前） */
+    if (questions.length) {
+      html += '<div class="section-label">悬 而 未 决 <span style="font-weight:400;color:var(--ink-3);">· 带着它们读，让书回答它们</span></div>';
+      if (carrying.length) html += renderQuestionList(carrying);
+      html += renderQuestionList(open.slice(0, 4));
+      if (open.length > 4) html += `<button class="more-link" data-f="问题">看全部 ${questions.length} 条 →</button>`;
     }
-    if (!groups.some(g => g[3].length)) html += '<div class="empty">读着读着，会有的</div>';
+    /* 次主角：理解（生命线） */
+    if (roots.length) {
+      html += '<div class="section-label">理 解 <span style="font-weight:400;color:var(--ink-3);">· 我的思想节点</span></div>';
+      html += renderInsightList(roots.slice(0, 5));
+      if (roots.length > 5) html += `<button class="more-link" data-f="我的理解">看全部 ${roots.length} 条 →</button>`;
+    }
+    /* 时间线降级为次级视图 */
+    html += '<div class="section-label">最 近 足 迹 <span style="font-weight:400;color:var(--ink-3);">· 时间线</span></div>';
+    html += renderTimelineList();
+    /* 共鸣单列（安静的收藏夹） */
+    if (resonates.length) {
+      html += '<div class="section-label">共 鸣 <span style="font-weight:400;color:var(--ink-3);">· 被击中瞬间的收藏</span></div>';
+      html += renderResonateList(resonates.slice(0, 3));
+      if (resonates.length > 3) html += `<button class="more-link" data-f="共鸣">看全部 ${resonates.length} 条 →</button>`;
+    }
+    if (!questions.length && !roots.length && !resonates.length) html += '<div class="empty">读着读着，会有的</div>';
   } else if (S.mindFilter === '共鸣') {
     const resonates = S.annotations.filter(a => a.type === 'resonate').sort((a, b) => b.createdAt - a.createdAt);
     html += resonates.length ? renderResonateList(resonates) : '<div class="empty">读到时收藏的共鸣会在这里</div>';
@@ -2149,11 +2277,13 @@ function renderQuestionList(list) {
   return list.map(q => {
     const book = S.books.find(b => b.id === q.bookId);
     const tagChips = (q.tags || []).slice(0, 5).map(t => `<span class="mini-tag" data-t="${esc(t)}">${esc(t)}</span>`).join('');
-    return `<div class="q-item card" data-qid="${esc(q.id)}">
+    const answers = Array.isArray(q.answers) && q.answers.length ? q.answers : (q.answerText ? [{ text: q.answerText, at: q.answeredAt || q.createdAt }] : []);
+    return `<div class="q-item card${q.carrying ? ' carrying' : ''}" data-qid="${esc(q.id)}">
       <div class="bd">${esc(q.text)}</div>
+      ${q.carrying ? '<div class="carry-tag">✈ 带着它读</div>' : ''}
       ${tagChips ? `<div class="tag-row">${tagChips}</div>` : ''}
-      ${q.answerText ? `<div class="ans">回应：${esc(String(q.answerText).slice(0, 80))}</div>` : ''}
-      <div class="mt">${q.status === 'answered' ? '已回应' : '悬着'} · ${book ? esc(book.title) : '无出处'} · ${timeAgo(q.createdAt)}</div>
+      ${answers.length ? `<div class="ans">已回应 ${answers.length} 次 · ${esc(String(answers[answers.length - 1].text).slice(0, 60))}</div>` : '<div class="mt" style="margin-top:7px;">还悬着</div>'}
+      <div class="mt">${book ? esc(book.title) : '无出处'} · ${timeAgo(q.createdAt)}</div>
     </div>`;
   }).join('');
 }
@@ -2245,11 +2375,16 @@ async function openInsightDetail(id) {
       <div style="font-size:13px;color:var(--ink-2);line-height:1.7;">${book ? '📖 ' + esc(book.title) + (chTitle ? ' · ' + esc(chTitle) : '') : '（无出处）'}
       ${root.quote ? '<br>「' + esc(String(root.quote).slice(0, 80)) + '…」' : ''}</div>
       ${book && root.chapterId ? `<div class="btn-row"><button class="btn-p" id="jumpOrigin">回到那里继续读</button></div>` : ''}
+      <div class="btn-row"><button class="btn-c" id="practiceI">由此记录实践</button></div>
       <div class="btn-row"><button class="btn-c" id="delInsight" style="color:var(--danger);">删除</button></div>`,
     onOpen: (rootEl) => {
       rootEl.querySelector('#jumpOrigin')?.addEventListener('click', () => {
         closeTopSheet();
         openReader(book.id, root.chapterId, Math.max(0, root.paraNum || 0));
+      });
+      rootEl.querySelector('#practiceI')?.addEventListener('click', () => {
+        closeTopSheet();
+        openPracticeSheet({ bookId: root.bookId, linkType: 'insight', linkId: root.id, quote: root.quote });
       });
       rootEl.querySelector('#delInsight')?.addEventListener('click', async () => {
         const ok = await uiConfirm('删除理解', '删除后这条理解及其在书中的阅读痕迹、时间线记录将一并移除。', '删除');
@@ -2273,17 +2408,29 @@ async function openQuestionDetail(id) {
   const book = S.books.find(b => b.id === q.bookId);
   const chTitle = book && book.chapterMeta ? ((book.chapterMeta.find(c => c.cid === q.chapterId) || {}).title || '') : '';
   const tagChips = (q.tags || []).map(t => `<span class="mini-tag" data-t="${esc(t)}">${esc(t)}</span>`).join(' ');
+  const answers = Array.isArray(q.answers) && q.answers.length ? q.answers : (q.answerText ? [{ text: q.answerText, at: q.answeredAt || q.createdAt }] : []);
+  const carryBtn = q.carrying
+    ? `<button class="row-btn" id="uncarryQ">✈ 不再带着它读</button>`
+    : `<button class="row-btn" id="carryQ">✈ 带着它继续读</button>`;
   openSheet({
     title: '问题',
     html: `
       <div style="font-size:14.5px;line-height:1.8;margin-bottom:10px;">${esc(q.text)}</div>
       ${tagChips ? `<div class="tag-row" style="margin-bottom:10px;">${tagChips}</div>` : ''}
-      ${q.answerText ? `<div class="ans" style="margin-bottom:10px;">回应：${esc(q.answerText)}</div>` : ''}
+      ${q.carrying ? '<div class="carry-tag" style="margin-bottom:10px;">✈ 正带着它读</div>' : ''}
+      <div class="section-label">这条问题的回应（${answers.length}）</div>
+      ${answers.length ? answers.slice().reverse().map(a => `
+        <div style="padding:10px 0;border-bottom:1px dashed var(--line);">
+          <div style="font-size:13.5px;line-height:1.7;">${esc(a.text)}</div>
+          <div style="font-size:10.5px;color:var(--ink-3);margin-top:4px;">${a.at ? timeAgo(a.at) : ''} 的回应</div>
+        </div>`).join('') : '<div class="empty" style="padding:14px;">还没有回应，悬着</div>'}
       <div class="section-label">来自</div>
       <div style="font-size:13px;color:var(--ink-2);line-height:1.7;margin-bottom:8px;">${book ? '📖 ' + esc(book.title) + (chTitle ? ' · ' + esc(chTitle) : '') : '（无出处）'}
       ${q.quote ? '<br>「' + esc(String(q.quote).slice(0, 80)) + '…」' : ''}</div>
       ${book && q.chapterId ? `<div class="btn-row"><button class="btn-c" id="jumpOrigin">回到那里再读</button></div>` : ''}
-      <div class="btn-row"><button class="btn-p" id="answerQ">${q.answerText ? '更新回应' : '写下回应'}</button></div>
+      <div class="btn-row"><button class="btn-p" id="answerQ">留下新回应</button></div>
+      <div class="btn-row">${carryBtn}</div>
+      <div class="btn-row"><button class="btn-c" id="practiceQ">由此记录实践</button></div>
       <div class="btn-row"><button class="btn-c" id="delQ" style="color:var(--danger);">删除</button></div>`,
     onOpen: (rootEl) => {
       rootEl.querySelector('#jumpOrigin')?.addEventListener('click', () => {
@@ -2291,6 +2438,16 @@ async function openQuestionDetail(id) {
         openReader(book.id, q.chapterId, Math.max(0, q.paraNum || 0));
       });
       rootEl.querySelector('#answerQ')?.addEventListener('click', () => { closeTopSheet(); openAnswerSheet(q); });
+      rootEl.querySelector('#carryQ')?.addEventListener('click', async () => {
+        await toggleCarryQuestion(id, true); closeTopSheet(); renderMind();
+      });
+      rootEl.querySelector('#uncarryQ')?.addEventListener('click', async () => {
+        await toggleCarryQuestion(id, false); closeTopSheet(); renderMind();
+      });
+      rootEl.querySelector('#practiceQ')?.addEventListener('click', () => {
+        closeTopSheet();
+        openPracticeSheet({ bookId: q.bookId, linkType: 'question', linkId: q.id, quote: q.quote });
+      });
       rootEl.querySelector('#delQ')?.addEventListener('click', async () => {
         const ok = await uiConfirm('删除问题', '删除后这个问题及其在书中的阅读痕迹、时间线记录将一并移除。', '删除');
         if (!ok) return;
@@ -2429,8 +2586,36 @@ async function openChangeDetail(id) {
       <div style="font-size:14.5px;line-height:1.8;margin-bottom:10px;">${esc(c.text)}</div>
       <div class="section-label">来源</div>
       <div style="font-size:13px;color:var(--ink-2);margin-bottom:8px;">${esc(c.source || '')} · ${c.confirmed ? '已确认' : '待确认'}</div>
+      ${c.evidence && c.evidence.length ? `
+        <div class="section-label">证据链（凭什么说变了）</div>
+        ${c.evidence.map((ev, i) => `
+          <div class="mini-line" data-ev="${i}" style="display:block;"><span style="color:var(--gold);font-size:10px;">${esc(ev.kind)}</span> ${esc(String(ev.text).slice(0, 46))}</div>
+        `).join('')}` : ''}
       ${!c.confirmed ? `<div class="btn-row"><button class="btn-p" id="cfmC">确认这条改变</button></div>` : ''}
       <div class="btn-row"><button class="btn-c" id="delC" style="color:var(--danger);">删除</button></div>`,
+    onOpen: (rootEl) => {
+      const cfm = rootEl.querySelector('#cfmC');
+      if (cfm) cfm.addEventListener('click', async () => { closeTopSheet(); await confirmChange(id); });
+      rootEl.querySelectorAll('.mini-line[data-ev]').forEach(el => el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const ev = (c.evidence || [])[parseInt(el.dataset.ev)];
+        if (!ev) return;
+        closeTopSheet();
+        if (ev.kind === '理解') openInsightDetail(ev.id);
+        else if (ev.kind === '问题回应') openQuestionDetail(ev.id);
+        else openPracticeDetail(ev.id);
+      }));
+      rootEl.querySelector('#delC').addEventListener('click', async () => {
+        const ok = await uiConfirm('删除改变', '删除后这条改变记录将不再保留。', '删除');
+        if (!ok) return;
+        closeTopSheet();
+        await removeById('changes', id);
+        S.changes = await listData('changes');
+        toast('改变记录已删除');
+        renderMind();
+      });
+    },
+  });
     onOpen: (rootEl) => {
       const cfm = rootEl.querySelector('#cfmC');
       if (cfm) cfm.addEventListener('click', async () => { closeTopSheet(); await confirmChange(id); });
@@ -2542,7 +2727,7 @@ function openBookMenu(bookId) {
       root.querySelector('#bmAddGroup').addEventListener('click', () => { closeTopSheet(); openAddToGroup(bookId); });
       root.querySelector('#bmDelete').addEventListener('click', async () => {
         closeTopSheet();
-        const ok = await uiConfirm('删除这本书', '删除后，这本书的原文、精炼、概念、共读记录、理解、问题、共鸣、实践、改变将一并移除。确定删除吗？', '删除');
+        const ok = await uiConfirm('删除这本书', '删除后，这本书的原文、章节、概念会从书库移除，只删「书的世界」。你在这本书里留下的理解、问题、共鸣、实践、改变都会保留，只是失去出处。确定删除吗？', '删除');
         if (!ok) return;
         await deleteBook(bookId);
         S.books = S.books.filter(x => x.id !== bookId);
@@ -2556,7 +2741,9 @@ async function deleteBook(bookId) {
   await removeById('books', bookId);
   const chaps = await listCol('chapters', true);
   for (const c of chaps) { if (c.data && c.data.bookId === bookId) await A.db.delete('chapters', c.id); }
-  for (const col of ['traces', 'sessions', 'annotations', 'concepts', 'practices', 'questions', 'insights', 'timeline']) {
+  /* 4.0 两个世界：删除书，只删「书的世界」——原文/章节/概念/书上痕迹。
+     用户的世界——理解/问题/共鸣/实践/改变/共读对话——全部保留，仅失去出处。 */
+  for (const col of ['traces', 'concepts']) {
     for (const r of await listCol(col, true)) { if (r.data && r.data.bookId === bookId) await A.db.delete(col, r.id); }
   }
   /* 从所有书单中移除这本书 */
@@ -2758,24 +2945,45 @@ async function runChangeAnalysis(force) {
   const totalSignals = understandings.length + practices.length + answered.length;
   if (totalSignals < 3) return;  // 样本不足，不做分析
   try {
+    /* 4.0：改变分析必须能「跨时间」，否则判断不了长期变化。
+       改成「早期 vs 近期」对照取样，带上时间戳，让 AI 看到变化起点与终点。 */
+    const byTime = (a, b) => (a.createdAt || 0) - (b.createdAt || 0);
+    const earlyU = [...understandings].sort(byTime).slice(0, 5);
+    const lateU = [...understandings].sort(byTime).slice(-5);
+    const earlyP = [...practices].sort(byTime).slice(0, 3);
+    const lateP = [...practices].sort(byTime).slice(-3);
+    const earlyQ = [...answered].sort(byTime).slice(0, 2);
+    const lateQ = [...answered].sort(byTime).slice(-2);
     const compact = [
-      ...understandings.slice(-8).map(i => `- 理解(${fmtDay(i.createdAt)})：${i.text}`),
-      ...practices.slice(-5).map(i => `- 实践：${i.belief || ''}${i.action ? ' → ' + i.action : ''}`),
-      ...answered.slice(-3).map(q => `- 问题已回应：${q.text} → ${q.answerText}`),
+      '【早期记录】（观察变化的起点）',
+      ...earlyU.map(i => `- 理解(${fmtDay(i.createdAt)})：${i.text}`),
+      ...earlyP.map(i => `- 实践：${i.belief || ''}${i.action ? ' → ' + i.action : ''}`),
+      ...earlyQ.map(q => `- 问题已回应：${q.text} → ${q.answerText}`),
+      '【近期记录】（观察变化的终点）',
+      ...lateU.map(i => `- 理解(${fmtDay(i.createdAt)})：${i.text}`),
+      ...lateP.map(i => `- 实践：${i.belief || ''}${i.action ? ' → ' + i.action : ''}`),
+      ...lateQ.map(q => `- 问题已回应：${q.text} → ${q.answerText}`),
     ].join('\n');
     const text = await lightAIText(
-      '你是一位长期自我观察的分析助手。请阅读一段读者的长期记录（理解/实践/问题回应），判断是否存在「长期改变」：观念、行为模式、生活方式或自我认知上持续的变化趋势。要求：1) 只判断跨多次记录、跨时间的持续变化，不要对单次内容下结论；2) 没有可靠证据就输出「暂无」；3) 若有，输出格式：【可能改变】观念/行为/自我认知：一句话描述（附依据来源）。克制，宁可「暂无」不要硬凑。',
+      '你是一位长期自我观察的分析助手。给你一段读者的长期记录，已按时间分成「早期」和「近期」两组。请对比早期与近期，判断是否存在「长期改变」：观念、行为模式、生活方式或自我认知上持续的变化趋势。要求：1) 必须基于「早期跟近期对照」发现的变化趋势，不能只看某一条记录；2) 时间跨度不足、或早期与近期没有可对照的差异，就输出「暂无」；3) 若有，输出格式：【可能改变】观念/行为/自我认知：一句话描述（附依据来源，注明从早期怎样的状态，到近期怎样的状态）。克制，宁可「暂无」不要硬凑。',
       compact, { apiConfigId: S.coset.smallApi, timeoutMs: 60000 }
     );
     const m = text.match(/【可能改变】([\s\S]+)/);
     if (m && !/暂无/.test(m[1])) {
+      /* 4.0 证据链：记录这次改变由哪些理解/实践/回应支撑，详情页可逐条点回 */
+      const evidence = [
+        ...lateU.slice(0, 3).map(i => ({ kind: '理解', id: i.id, text: i.text, bookId: i.bookId, chapterId: i.chapterId, paraNum: i.paraNum })),
+        ...lateP.slice(0, 2).map(p => ({ kind: '实践', id: p.id, text: (p.belief || '') + (p.action ? ' → ' + p.action : ''), bookId: p.bookId })),
+        ...lateQ.slice(0, 1).map(q => ({ kind: '问题回应', id: q.id, text: q.text + ' → ' + q.answerText, bookId: q.bookId })),
+      ];
       const change = {
         id: 'chg_' + uid(), text: m[1].slice(0, 160),
-        bookId: null, source: '周期分析', confirmed: false, createdAt: Date.now(),
+        bookId: null, source: '周期分析', confirmed: false,
+        evidence, createdAt: Date.now(),
       };
       await upsert('changes', change);
       S.changes.push(change);
-      toast('发现一条可能的变化，去「思想 → 改变」查看确认');
+      toast('发现一条可能的变化，去「生活」查看确认');
     }
     await upsert('meta', { id: 'change_last', at: Date.now() });
   } catch (e) {
@@ -2921,7 +3129,7 @@ function openCoreadSettings() {
         toast('开始分析…');
         await runChangeAnalysis(true);
         closeTopSheet();
-        toast('分析完成，如发现改变会出现在「思想 → 改变」');
+        toast('分析完成，如发现改变会出现在「生活」');
       });
     },
   });
