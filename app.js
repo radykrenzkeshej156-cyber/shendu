@@ -471,7 +471,8 @@ function bookBt(book) {
   return (book.format === 'epub' ? 'epub · ' : '');
 }
 
-/* ───────── 桌面 ───────── */
+/* ───────── 此刻（4.1：从「书桌」改为循环仪表盘，不是书架快照） ─────────
+   打开 App 看到的是「我正在进行的思想」：正在读 / 带着的问题 / 进行中的实践 / 最近长出的。 */
 async function renderDesk() {
   S.tab = 'desk';
   setTabActive('desk');
@@ -480,11 +481,24 @@ async function renderDesk() {
   $id('p-mind').classList.remove('active');
   const pl = $id('p-life');
   if (pl) pl.classList.remove('active');
-  const reading = S.books.filter(b => b.lastReadAt).sort((a, b) => b.lastReadAt - a.lastReadAt).slice(0, 3);
-  const latest = [...S.timeline].sort((a, b) => b.ts - a.ts)[0];
-  let html = `<div class="h-row"><div><div class="h-page">书桌</div>
+  await loadAll();
+  const reading = S.books.filter(b => b.lastReadAt).sort((a, b) => b.lastReadAt - a.lastReadAt).slice(0, 2);
+  const carried = carriedQuestions().slice(0, 3);
+  const ongoing = (S.practices || []).filter(p => p.status === '进行中').sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt)).slice(0, 2);
+  /* 最近长出的：确认的改变 / 最新的理解 / 最新的共鸣 */
+  const latestIdea = S.insights.filter(i => i.rootId == null && displayType(i.type) === '我的理解').sort((a, b) => (b.growthAt || b.createdAt) - (a.growthAt || a.createdAt))[0];
+  const latestChange = S.changes.filter(c => c.confirmed).sort((a, b) => b.createdAt - a.createdAt)[0];
+  const latestReso = S.annotations.filter(a => a.type === 'resonate').sort((a, b) => b.createdAt - a.createdAt)[0];
+  const growPicks = [];
+  if (latestChange) growPicks.push({ kind: '改变', rec: latestChange });
+  if (latestIdea) growPicks.push({ kind: '理解', rec: latestIdea });
+  if (latestReso) growPicks.push({ kind: '共鸣', rec: latestReso });
+
+  let html = `<div class="h-row"><div><div class="h-page">此刻</div>
     <div class="h-sub">${new Date().toLocaleDateString('zh-CN', { weekday: 'long', month: 'long', day: 'numeric' })}</div></div>
     <button class="h-btn" id="deskSettings">设置</button></div>`;
+
+  /* 正在读 */
   html += '<div class="section-label">正 在 读</div>';
   if (reading.length) {
     html += reading.map(b => {
@@ -492,26 +506,72 @@ async function renderDesk() {
       return `<div class="now-card card" data-bid="${esc(b.id)}">
         <div class="cover" style="background:${esc(b.coverColor || '#6f5d48')};">${esc((b.title || '书')[0])}</div>
         <div class="info"><div class="t">${esc(b.title)}</div>
-        <div class="m">${chTitle ? esc(chTitle) : ''} · 上次 ${timeAgo(b.lastReadAt)}</div></div>
+        <div class="m">${chTitle ? esc(chTitle) : ''} · ${timeAgo(b.lastReadAt)}</div></div>
         <div class="go">›</div>
       </div>`;
     }).join('');
   } else {
-    html += '<div class="empty">还没有在读的书<br>去书库导入一本吧</div>';
+    html += '<div class="empty" style="padding:20px 18px;">还没有在读的书<br>去书库导入一本吧</div>';
   }
-  html += '<div class="section-label">最 近 留 下 的</div>';
-  if (latest) {
-    const book = S.books.find(b => b.id === latest.bookId);
-    html += `<div class="pulse-strip"><div class="tt">${esc(latest.kind)}</div>
-      <div class="bd">${esc(String(latest.text || '').slice(0, 60))}${String(latest.text || '').length > 60 ? '…' : ''}</div>
-      <div class="mt">${book ? esc(book.title) + ' · ' : ''}${timeAgo(latest.ts)}</div></div>`;
-  } else {
-    html += '<div class="empty">还没有什么留下来<br>读着读着，会有的</div>';
+
+  /* 带着的问题 */
+  if (carried.length) {
+    html += '<div class="section-label">带 着 的 问 题 <span style="font-weight:400;color:var(--ink-3);">· 正悬着</span></div>';
+    html += carried.map(q => {
+      const book = S.books.find(b => b.id === q.bookId);
+      return `<div class="q-item card" data-qid="${esc(q.id)}" style="margin-bottom:8px;">
+        <div class="bd">${esc(q.text)}</div>
+        <div class="mt">${book ? esc(book.title) : '无出处'} · 悬着</div>
+      </div>`;
+    }).join('');
   }
+
+  /* 进行中的实践 */
+  if (ongoing.length) {
+    html += '<div class="section-label">进 行 中 的 实 践 <span style="font-weight:400;color:var(--ink-3);">· 等你的行动</span></div>';
+    html += ongoing.map(p => {
+      const book = S.books.find(b => b.id === p.bookId);
+      return `<div class="thought-item card" data-pid="${esc(p.id)}">
+        <div class="trow"><span class="tt">→ 实践 · ${esc(p.status || '进行中')}</span><span class="ts">${timeAgo(p.updatedAt || p.createdAt)}</span></div>
+        ${p.belief ? `<div class="bd" style="font-size:13px;color:var(--ink-2);">信念：${esc(p.belief)}</div>` : ''}
+        ${p.action ? `<div class="bd">行动：${esc(p.action)}</div>` : ''}
+        ${book ? `<div class="origin">📖 ${esc(book.title)}</div>` : ''}
+      </div>`;
+    }).join('');
+  }
+
+  /* 最近长出的 */
+  if (growPicks.length) {
+    html += '<div class="section-label">最 近 长 出 的 <span style="font-weight:400;color:var(--ink-3);">· 我在生长</span></div>';
+    html += growPicks.slice(0, 2).map(g => {
+      if (g.kind === '改变') {
+        return `<div class="pulse-strip"><div class="tt">◆ 改变 · 已确认</div>
+          <div class="bd">${esc(String(g.rec.text || '').slice(0, 60))}</div>
+          <div class="mt">${timeAgo(g.rec.createdAt)}</div></div>`;
+      }
+      if (g.kind === '理解') {
+        const book = S.books.find(b => b.id === g.rec.bookId);
+        return `<div class="pulse-strip" style="background:var(--accent-soft);border-color:#e2d9cb;"><div class="tt">· 理解</div>
+          <div class="bd">${esc(String(g.rec.text || '').slice(0, 60))}</div>
+          <div class="mt">${book ? esc(book.title) + ' · ' : ''}${timeAgo(g.rec.growthAt || g.rec.createdAt)}</div></div>`;
+      }
+      const book = S.books.find(b => b.id === g.rec.bookId);
+      return `<div class="pulse-strip" style="background:#f9eff2;border-color:#eed4dc;"><div class="tt">♥ 共鸣</div>
+        <div class="bd">「${esc(String(g.rec.selectedText || '').slice(0, 50))}」</div>
+        <div class="mt">${book ? esc(book.title) + ' · ' : ''}${timeAgo(g.rec.createdAt)}</div></div>`;
+    }).join('');
+  }
+
+  if (!reading.length && !carried.length && !ongoing.length && !growPicks.length) {
+    html += '<div class="empty">读一本，想一点，做一点<br>这里会长出你的深读</div>';
+  }
+
   $id('deskBody').innerHTML = html;
   const dst = $id('deskSettings');
   if (dst) dst.addEventListener('click', openCoreadSettings);
   $qa('#deskBody .now-card').forEach(c => c.addEventListener('click', () => openReader(c.dataset.bid)));
+  $qa('#deskBody .q-item[data-qid]').forEach(el => el.addEventListener('click', () => openQuestionDetail(el.dataset.qid)));
+  $qa('#deskBody .thought-item[data-pid]').forEach(el => el.addEventListener('click', () => openPracticeDetail(el.dataset.pid)));
 }
 
 /* ───────── 书库 ───────── */
@@ -588,12 +648,19 @@ async function openReader(bookId, chapterIdTo, paraTo) {
     $id('rChapTitle').textContent = ch ? ch.title : '';
     /* 4.0 渲染携带问题胶囊 */
     renderCarryBar();
-    /* 进入章节 → 章节预处理：若本章还没有精炼，后台预生成（章节地图），不重复生成 */
+    /* 进入章节 → 章节预处理：若本章还没有精炼，后台预生成（章节地图），不重复生成。
+       4.1：首次自动生成时提示一次（知情，可在共读设置关掉） */
     if (ch && !ch.summary) {
       generateChapterSummary(ch).then(() => {
         /* 若已进入共读且正在用本章，刷新一次上下文展示 */
         if (S.coSession && S.coSession.chapterId === ch.id) renderCoHeader();
       });
+      if (!(S.coset && S.coset.summaryNoticed)) {
+        toast('我会在后台生成这一章的「精炼」供共读定位，可去共读设置关闭');
+        S.coset = S.coset || defaultCoset();
+        S.coset.summaryNoticed = true;
+        saveCoreadSettings();
+      }
     }
     /* 定位段落：paraTo / currentParaNum 一律按「全局段号」处理 */
     S.rParas = ch ? parasOf(ch.text) : [];
@@ -794,6 +861,19 @@ function checkChapterEnd() {
   if (next && atEnd) {
     chip.hidden = false;
     $id('rNextBtn').onclick = () => jumpReaderTo(next.id, 0);
+    /* 4.1 章末收束：读完一章，问一句「有没有回应你带着的问题」 */
+    const carried = carriedQuestions();
+    const endQ = $id('rEndQ');
+    if (carried.length) {
+      if (!endQ) {
+        const btn = document.createElement('button');
+        btn.id = 'rEndQ';
+        btn.textContent = `这一章有没有回应你带着的 ${carried.length} 个问题？`;
+        btn.className = 'end-q';
+        btn.onclick = () => { toggleReaderUI(false); openCarryList(); };
+        chip.appendChild(btn);
+      } else endQ.hidden = false;
+    } else if (endQ) endQ.hidden = true;
     /* 读完整章 → 以完整章节为依据对已有精炼做更新/修正（节流：距上次生成>30s 才更新） */
     if (S.rChapter && !S.rChapter._refreshTriggered) {
       S.rChapter._refreshTriggered = true;
@@ -803,7 +883,11 @@ function checkChapterEnd() {
         generateChapterSummary(S.rChapter).then(() => {});
       }
     }
-  } else chip.hidden = true;
+  } else {
+    chip.hidden = true;
+    const endQ = $id('rEndQ');
+    if (endQ) endQ.hidden = true;
+  }
 }
 async function saveProgress() {
   const b = S.rBook;
@@ -1503,16 +1587,17 @@ async function buildRecall(currentText, chapter, summary) {
     concepts: concepts.length, sessions: sessions.length,
   };
 }
-/* 被动写入：AI 提出「可能值得保存」，用户确认后才写入 */
+/* 4.1 自然的「可能值得保存」：不再用带标题的工具面板，改用 AI 聊天气泡样式，
+   让用户感觉是讨论中自然提到的——"你刚才这句理解挺完整，要我帮你记下来吗？" */
 function showSaveProposal(type, content, s) {
   const msgs = $id('coMsgs');
   const div = document.createElement('div');
-  div.className = 'sugg-card';
-  div.innerHTML = `<div class="s-title">可能值得保存 · ${type === '问题' ? '问题' : '理解'}</div>
-    <div>${esc(content)}</div>
-    <div class="s-actions">
-      <button class="s-save">保存</button>
-      <button class="s-ignore">忽略</button>
+  div.className = 'msg ai';
+  const label = type === '问题' ? '问题' : '理解';
+  div.innerHTML = `<div style="font-size:12.5px;line-height:1.7;">${esc(content)}</div>
+    <div class="sugg-actions" style="display:flex;gap:6px;margin-top:8px;">
+      <button class="s-save" style="padding:6px 14px;border-radius:100px;background:var(--accent);color:#fff;border:none;font-size:12px;">记下来</button>
+      <button class="s-ignore" style="padding:6px 14px;border-radius:100px;background:#eeeae3;color:var(--ink-2);border:none;font-size:12px;">不用</button>
     </div>`;
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;
@@ -2124,10 +2209,18 @@ async function renderLife() {
   await loadAll();
   const practices = (S.practices || []).slice().sort((a, b) => b.createdAt - a.createdAt);
   const changes = (S.changes || []).slice().sort((a, b) => b.createdAt - a.createdAt);
-  let html = `<div class="h-row"><div><div class="h-page">生活</div>
+  /* 4.1 实践节奏：标出超过一周没更新的「进行中」实践，提醒回顾 */
+  const stalePractices = practices.filter(p => p.status === '进行中' && p.updatedAt && Date.now() - p.updatedAt > 7 * 86400000);
+  let html = `<div class="h-row"><div><div class="h-page">生活 · 长河</div>
     <div class="h-sub">书进入生活 · 实践 / 长期改变</div></div>
     <button class="h-btn" id="lifeAddPractice">＋实践</button></div>`;
 
+  if (stalePractices.length) {
+    html += `<div class="pulse-strip" style="background:#f5f0e8;border-color:#e0d7c8;margin-bottom:10px;">
+      <div class="tt">⏰ 需要回顾</div>
+      <div class="bd" style="font-size:13px;">你有 ${stalePractices.length} 条实践超过一周没有更新了<br>点开看看，更新状态或放下它</div>
+    </div>`;
+  }
   html += '<div class="section-label">实 践 <span style="font-weight:400;">· 信念 + 行动（你自己来定）</span></div>';
   html += practices.length ? renderPracticeList(practices) : '<div class="empty">实践是你主动把阅读带进生活的记录<br>AI 不替你制定方案，从「＋实践」开始吧</div>';
 

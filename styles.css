@@ -200,8 +200,9 @@ input, textarea { font-family: inherit; }
 .reader-bottom .ic { font-size: 20px; line-height: 1.1; }
 .reader-bottom .av { width: 34px; height: 34px; border-radius: 50%; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 15px; font-style: normal; }
 .reader-bottom .av.gray { background: #ddd6cc; color: var(--ink-2); }
-.chip-nav { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(var(--safe-b) + 92px); z-index: 71; }
+.chip-nav { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(var(--safe-b) + 92px); z-index: 71; display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .chip-nav button { padding: 8px 18px; border: 1px solid var(--line); border-radius: 100px; background: rgba(255,255,255,.94); color: var(--ink-2); font-size: 12.5px; box-shadow: var(--shadow-1); }
+.chip-nav .end-q { color: var(--accent); border-color: #e4d6bc; background: var(--gold-soft); font-size: 12.5px; padding: 9px 18px; }
 
 /* 4.0 携带问题胶囊 */
 .r-carry {
@@ -257,6 +258,7 @@ input, textarea { font-family: inherit; }
 .sugg-card button.s-save { background: var(--accent); color: #fff; border: none; border-radius: 100px; padding: 5px 13px; font-size: 11.5px; }
 .sugg-card button.s-branch { background: var(--accent-soft); color: var(--accent); border: none; border-radius: 100px; padding: 5px 13px; font-size: 11.5px; }
 .sugg-card button.s-ignore { background: #eeeae3; color: var(--ink-2); border: none; border-radius: 100px; padding: 5px 13px; font-size: 11.5px; }
+.sugg-actions button:active { opacity: .75; }
 .co-tools { display: flex; gap: 8px; padding: 6px 14px 2px; flex-shrink: 0; border-top: 1px solid var(--line-soft); }
 .co-tools button { padding: 6px 13px; border: 1px solid var(--line); border-radius: 100px; background: none; color: var(--ink-2); font-size: 12px; min-height: 34px; }
 .co-input { display: flex; gap: 8px; align-items: center; padding: 8px 14px calc(10px + var(--safe-b)); flex-shrink: 0; }
