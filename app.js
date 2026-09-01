@@ -2616,20 +2616,6 @@ async function openChangeDetail(id) {
       });
     },
   });
-    onOpen: (rootEl) => {
-      const cfm = rootEl.querySelector('#cfmC');
-      if (cfm) cfm.addEventListener('click', async () => { closeTopSheet(); await confirmChange(id); });
-      rootEl.querySelector('#delC').addEventListener('click', async () => {
-        const ok = await uiConfirm('删除改变', '删除后这条改变记录将不再保留。', '删除');
-        if (!ok) return;
-        closeTopSheet();
-        await removeById('changes', id);
-        S.changes = await listData('changes');
-        toast('改变记录已删除');
-        renderMind();
-      });
-    },
-  });
 }
 
 /* 阅读中思想抽屉（不离开阅读页）——只显示「理解」，问题/共鸣引导到思想页 */
