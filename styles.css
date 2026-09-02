@@ -247,6 +247,13 @@ input, textarea { font-family: inherit; }
 .msg { max-width: 88%; padding: 9px 13px; border-radius: 14px; margin-bottom: 7px; font-size: 14px; line-height: 1.68; white-space: pre-wrap; word-break: break-word; }
 .msg.user { background: #f0ebe3; margin-left: auto; border-bottom-right-radius: 5px; color: var(--ink); }
 .msg.ai { background: #f3f4f6; margin-right: auto; border-bottom-left-radius: 5px; color: #333538; }
+/* 用户自己的话旁的「记下来」：安静的沉淀入口，不打断阅读 */
+.msg-side { display: flex; justify-content: flex-end; margin: -4px 0 8px; }
+.msg-save {
+  border: none; background: none; color: var(--ink-3); font-size: 11px;
+  padding: 2px 8px; border-radius: 100px;
+}
+.msg-save:active { color: var(--accent); background: var(--accent-soft); }
 .msg .quote-ref { font-size: 11.5px; color: var(--ink-3); font-family: var(--font-serif); border-left: 2px solid #d9d1c4; padding-left: 8px; margin-bottom: 5px; }
 .sess-divider { text-align: center; font-size: 10.5px; color: var(--ink-3); margin: 14px 0 8px; position: relative; }
 .typing { font-size: 12.5px; color: var(--ink-3); padding: 8px 14px; }
@@ -310,12 +317,15 @@ input, textarea { font-family: inherit; }
 .import-status { font-size: 12.5px; color: var(--ink-2); margin: 8px 0; display: flex; align-items: center; gap: 7px; }
 .change-btn { display: block; width: 100%; padding: 12px; border: 1px dashed var(--line); border-radius: 11px; background: none; color: var(--accent); font-size: 13.5px; }
 
-/* 章节精炼卡片（书本层 UI） */
-.ch-summary-card { margin: 0 2px 24px; padding: 13px 15px; border-left: 3px solid var(--gold); background: #fffdf8; }
-.cs-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+/* 章节精炼卡片（书本层 UI）—— 默认收起，点头部再展开，不剧透 */
+.ch-summary-card { margin: 0 2px 24px; padding: 0; border-left: 3px solid var(--gold); background: #fffdf8; border-radius: 11px; overflow: hidden; }
+.ch-summary-card.is-empty { border-left-color: var(--line); }
+.cs-toggle { cursor: pointer; user-select: none; }
+.cs-toggle:active { background: var(--gold-soft); }
+.cs-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0; padding: 12px 15px; }
 .cs-title { font-size: 11px; letter-spacing: 2px; color: var(--gold); font-weight: 600; }
 .cs-state { font-size: 10.5px; color: var(--ink-3); }
-.cs-body { font-size: 13px; line-height: 1.8; color: var(--ink-2); }
+.cs-body { font-size: 13px; line-height: 1.8; color: var(--ink-2); padding: 0 15px 13px; }
 .cs-text { white-space: pre-wrap; font-family: var(--font-serif); color: #5a4a30; }
 .cs-concepts { margin-top: 9px; font-size: 12px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .cs-concept { font-size: 11px; color: var(--accent); background: var(--gold-soft); border-radius: 100px; padding: 3px 11px; cursor: pointer; border: none; }
@@ -334,4 +344,31 @@ input, textarea { font-family: inherit; }
 .toast.show { opacity: 1; }
 .spin { display: inline-block; width: 14px; height: 14px; flex-shrink: 0; border: 2px solid rgba(255,255,255,.25); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+/* 书籍详情 · 两个世界分栏 */
+.two-world { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin: 8px 0 4px; }
+.world-cell {
+  border: 1px solid var(--line); background: #fff; border-radius: 12px;
+  padding: 13px 4px; text-align: center; color: var(--ink-2); cursor: pointer;
+}
+.world-cell b { display: block; font-size: 19px; color: var(--ink); margin-bottom: 2px; }
+.world-cell span { font-size: 11px; color: var(--ink-3); }
+.world-cell:active { background: var(--accent-soft); }
+
+/* 本次共读上下文 · 可展开真实内容 */
+.ctx-blocks { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.ctx-detail { border: 1px solid var(--line-soft); border-radius: 11px; background: #fff; overflow: hidden; }
+.ctx-detail summary {
+  padding: 11px 14px; cursor: pointer; font-size: 12.5px; color: var(--accent);
+  list-style: none; user-select: none; position: relative;
+}
+.ctx-detail summary::-webkit-details-marker { display: none; }
+.ctx-detail summary:before { content: '▸ '; }
+.ctx-detail[open] summary:before { content: '▾ '; }
+.ctx-detail summary:active { background: var(--surface-2); }
+.ctx-body {
+  padding: 12px 14px; border-top: 1px dashed var(--line-soft);
+  font-size: 12px; line-height: 1.8; color: var(--ink-2);
+  max-height: 46dvh; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+}
+
 .hidden { display: none !important; }

@@ -598,12 +598,11 @@ async function renderLib(groupId) {
     </div>`;
   if (filtered.length) {
     html += filtered.map(b => {
-      const pct = totalParas(b) ? Math.round((b.currentParaNum / totalParas(b)) * 100) : 0;
+      const curCh = bookCurrentChapterTitle(b);
       return `<div class="book-card card" data-bid="${esc(b.id)}">
         <div class="cover" style="background:${esc(b.coverColor || '#6f5d48')};">${esc((b.title || '书')[0])}</div>
         <div class="info"><div class="t">${esc(b.title)}</div>
-        <div class="m">${esc(b.author || '')} · ${bookBt(b)}${pct}%</div>
-        <div class="p"><i style="width:${pct}%"></i></div></div>
+        <div class="m">${esc(b.author || '')}${curCh ? ' · 读到《' + esc(curCh) + '》' : ''}</div></div>
         <button class="more" data-bid="${esc(b.id)}">⋯</button>
       </div>`;
     }).join('');
@@ -735,21 +734,33 @@ function chapterSummaryCardHtml(ch) {
   if (!ch) return '';
   const hasSummary = !!(ch.summary && ch.summaryAt);
   const concepts = S.concepts ? S.concepts.filter(c => c.chapterId === ch.id) : [];
-  return `<div class="ch-summary-card card" data-summary-card="${esc(ch.id)}">
-    <div class="cs-head">
+  /* 精炼是 AI 的后台记忆，不是读前的剧透：默认收起，需要时再展开 */
+  return `<div class="ch-summary-card card${hasSummary ? '' : ' is-empty'}" data-summary-card="${esc(ch.id)}">
+    <div class="cs-head cs-toggle">
       <span class="cs-title">章节精炼</span>
-      <span class="cs-state">${hasSummary ? '已生成' : '未生成'}</span>
+      <span class="cs-state">${hasSummary ? '⤵ 展开看看' : '未生成'}</span>
     </div>
-    ${hasSummary ? `<div class="cs-body"><div class="cs-text">${esc(ch.summary)}</div>
-      ${concepts.length ? `<div class="cs-concepts"><b>本章概念：</b>${concepts.map(c => `<span class="cs-concept" data-cid="${esc(c.id)}">${esc(c.term)}</span>`).join('')}</div>` : ''}
-      <div class="cs-actions"><button class="cs-btn" data-refresh="1">重新生成</button><button class="cs-btn cs-fold">收起</button></div></div>`
-      : `<div class="cs-body"><div class="cs-empty">进入本章时自动生成精炼，供共读时快速定位本章内容。</div>
-      <div class="cs-actions"><button class="cs-btn" data-gen="1">生成章节精炼</button></div></div>`}
+    <div class="cs-body"${hasSummary ? ' hidden' : ''}>
+      ${hasSummary ? `<div class="cs-text">${esc(ch.summary)}</div>
+        ${concepts.length ? `<div class="cs-concepts"><b>本章概念：</b>${concepts.map(c => `<span class="cs-concept" data-cid="${esc(c.id)}">${esc(c.term)}</span>`).join('')}</div>` : ''}
+        <div class="cs-actions"><button class="cs-btn" data-refresh="1">重新生成</button><button class="cs-btn cs-fold">收起</button></div>`
+        : `<div class="cs-empty">进入本章时自动生成精炼，供共读时快速定位本章内容。</div>
+        <div class="cs-actions"><button class="cs-btn" data-gen="1">生成章节精炼</button></div>`}
+    </div>
   </div>`;
 }
 function bindChapterSummaryCard() {
   const card = $q('[data-summary-card]');
   if (!card) return;
+  /* 点击头部可展开/收起精炼卡片 */
+  card.querySelector('.cs-toggle')?.addEventListener('click', (e) => {
+    const body = card.querySelector('.cs-body');
+    const state = card.querySelector('.cs-state');
+    if (!body) return;
+    const willOpen = body.hasAttribute('hidden');
+    if (willOpen) { body.removeAttribute('hidden'); if (state) state.textContent = '收起'; }
+    else { body.setAttribute('hidden', ''); if (state) state.textContent = '⤵ 展开看看'; }
+  });
   card.querySelector('[data-refresh]')?.addEventListener('click', async () => {
     toast('正在重新生成章节精炼…');
     await refreshChapterSummary(S.rChapter);
@@ -764,7 +775,10 @@ function bindChapterSummaryCard() {
   });
   card.querySelector('.cs-fold')?.addEventListener('click', () => {
     const b = card.querySelector('.cs-body');
-    if (b) b.style.display = b.style.display === 'none' ? '' : 'none';
+    const state = card.querySelector('.cs-state');
+    if (!b) return;
+    b.setAttribute('hidden', '');
+    if (state) state.textContent = '⤵ 展开看看';
   });
   card.querySelectorAll('.cs-concept[data-cid]').forEach(el => el.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -851,7 +865,8 @@ $id('rScroll').addEventListener('scroll', () => {
 function progressLabel() {
   const book = S.rBook;
   if (!book || !book.chapterMeta || !book.chapterMeta.length) return '';
-  return `${S.readerChapterIndex + 1}/${book.chapterMeta.length} · 全书 ${Math.round((S.rParaCur / Math.max(1, totalParas(book))) * 100)}%`;
+  /* 只给导航信息，不给「读了多少」的进度焦虑 */
+  return `第 ${S.readerChapterIndex + 1} 节 · 共 ${book.chapterMeta.length} 节`;
 }
 function checkChapterEnd() {
   const sc = $id('rScroll');
@@ -913,8 +928,11 @@ $id('rMind').addEventListener('click', () => {
   openMindDrawer();
 });
 $id('rCo').addEventListener('click', () => {
-  if (!S.companionId) ensureCompanion().then(ok => ok && openCoRead('chapter', '', 0, 0));
-  else openCoRead('chapter', '', 0, 0);
+  /* 锚定当前阅读位置：不划线的共读也围绕「正在读的这一段」，而不是章首 */
+  const at = S.rParaCur || 0;
+  const loc = S.rParaLocal || 0;
+  if (!S.companionId) ensureCompanion().then(ok => ok && openCoRead('here', '', at, loc));
+  else openCoRead('here', '', at, loc);
 });
 
 /* 点击正文唤出/收起菜单（有文本选区时不切换） */
@@ -1008,12 +1026,16 @@ async function openTraceDetail(traceId) {
 let selInfo = { text: '', para: 0, local: 0, chapId: null };
 function buildSelBar() {
   const bar = $id('selBar');
+  /* 划线的第一反应只有三件事：谈这句 / 记理解 / 收藏共鸣。
+     悬题与实践走更深的路径，不在这里抢注意力。 */
   bar.innerHTML = `
-    <button data-act="coread">共读</button>
+    <button data-act="coread">谈这句</button>
+    <button data-act="understand">记理解</button>
     <button data-act="resonate">共鸣</button>
-    <button data-act="question">悬题</button>
-    <button data-act="understand">理解</button>
-    <button data-act="practice">实践</button>`;
+    <button data-act="more">⋯</button>`;
+  bar.querySelector('button[data-act="more"]')?.addEventListener('click', () => {
+    openSelMoreSheet(selInfo);
+  });
   bar.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
     const act = b.dataset.act;
     hideSelBar();
@@ -1053,6 +1075,29 @@ function handleSelAction(act) {
   else if (act === 'question') openQuestionSheet({ bookId: S.rBook ? S.rBook.id : null, chapterId: chapId, paraNum: para, quote: text, local });
   else if (act === 'understand') openUnderstandSheet(text, para);
   else if (act === 'practice') openPracticeSheet({ bookId: S.rBook ? S.rBook.id : null, chapterId: chapId, paraNum: para, quote: text });
+  else if (act === 'more') openSelMoreSheet(selInfo);
+}
+/* 划线的次要动作：悬题 / 实践 / 回到这段继续读 —— 收敛到「⋯」之后 */
+function openSelMoreSheet(info) {
+  const { text, para, chapId } = info || {};
+  if (!text) return;
+  openSheet({
+    title: '这段还能做什么',
+    html: `
+      <div class="field"><div style="font-size:13px;color:var(--ink-2);line-height:1.7;background:var(--surface-2);border-radius:9px;padding:9px 11px;">「${esc(text.slice(0, 100))}」</div></div>
+      <button class="row-btn" id="smQuestion">悬题 · 把没想明白的留下来</button>
+      <button class="row-btn" id="smPractice">实践 · 由此记下信念与行动</button>`,
+    onOpen: (root) => {
+      root.querySelector('#smQuestion').addEventListener('click', () => {
+        closeTopSheet();
+        openQuestionSheet({ bookId: S.rBook ? S.rBook.id : null, chapterId: chapId, paraNum: para, quote: text });
+      });
+      root.querySelector('#smPractice').addEventListener('click', () => {
+        closeTopSheet();
+        openPracticeSheet({ bookId: S.rBook ? S.rBook.id : null, chapterId: chapId, paraNum: para, quote: text });
+      });
+    },
+  });
 }
 /* 共鸣：用户主动收藏，不做 AI 判断 */
 async function saveResonate(quote, para) {
@@ -1193,7 +1238,7 @@ async function openCoRead(mode, quote, paraNum, local) {
 }
 function newCoSession(mode, quote, paraNum, local) {
   const chapter = S.rChapter;
-  const topic = mode === 'quote' ? `划线共读 · ${chapter.title}` : `整章共读 · ${chapter.title}`;
+  const topic = mode === 'quote' ? `划线共读 · ${chapter.title}` : `此处共读 · ${chapter.title}`;
   /* 只在内存里建会话；用户真正发出第一条消息时才落库生成话题，避免每次打开都产生空话题 */
   S.coSession = {
     id: 'sess_' + uid(),
@@ -1229,24 +1274,40 @@ function renderCoHeader() {
     /* 整章共读：只显示当前章节名，不显示整段文章内容 */
     q.hidden = false;
     const chTitle = S.rChapter ? S.rChapter.title : '';
-    q.innerHTML = '<span class="qlabel">当前共读 · 章节</span>' + esc(chTitle);
+    q.innerHTML = '<span class="qlabel">当前共读 · 正在读的地方</span>' + esc(chTitle);
   }
 }
 function renderCoMsgs() {
   const el = $id('coMsgs');
   const s = S.coSession;
-  if (!s) { el.innerHTML = '<div class="typing">从书中划一段文字，或直接开始整章共读。</div>'; return; }
+  if (!s) { el.innerHTML = '<div class="typing">从书中划一段文字，或点「共读」就着你正在读的这段谈。</div>'; return; }
   let html = '';
-  s.msgs.forEach(m => {
+  s.msgs.forEach((m, mi) => {
     if (m.kind === 'divider') { html += `<div class="sess-divider">${esc(m.label)}</div>`; return; }
     const isUser = m.role === 'user';
     /* 原文已在「当前共读 · 原文」处统一引用，消息内不再重复引用 */
     html += `<div class="msg ${isUser ? 'user' : 'ai'}">${esc(m.text)}</div>`;
+    /* 沉淀主动权在用户手上：自己的话随时可以「记下来」，不必等 AI 建议 */
+    if (isUser) {
+      html += `<div class="msg-side"><button class="msg-save" data-mi="${mi}">记下来</button></div>`;
+    }
     if (m.failed) html += `<button class="retry-btn" data-retry="1">↻ 重试这次共读</button>`;
   });
   el.innerHTML = html || '<div class="typing">说点什么，开始共读。</div>';
   el.scrollTop = el.scrollHeight;
   el.querySelectorAll('.retry-btn').forEach(btn => btn.addEventListener('click', () => retryCoMessage()));
+  /* 「记下来」：把用户这一句话沉淀为理解，主动权在用户手上 */
+  el.querySelectorAll('.msg-save').forEach(btn => btn.addEventListener('click', async () => {
+    const mi = parseInt(btn.dataset.mi);
+    const m = s.msgs[mi];
+    if (!m || !m.text) return;
+    const ins = await createInsight('我的理解', m.text, {
+      tags: [],
+      bookId: s.bookId, chapterId: s.chapterId, paraNum: s.paraNum, quote: s.quote,
+    });
+    genInsightMeta(ins);
+    toast('已记下来');
+  }));
 }
 async function sendCoMessage(msgText) {
   let s = S.coSession;
@@ -1413,7 +1474,11 @@ function recallToText(kept) {
 
 /* ───────── 共读 AI 生成（透明可配置上下文 + 三级检索 + 严格沉淀规则） ───────── */
 /* 记录本次共读 AI 实际看到的上下文（供「本次共读上下文」查看） */
-function emptyCtxLog() { return { origLen: 0, summary: false, bookU: 0, bookQ: 0, crossU: 0, crossQ: 0, concepts: 0, sessions: 0, card: false, msgs: 0, memShort: false, memLong: false, core: false, carried: 0, tokenEst: 0 }; }
+function emptyCtxLog() {
+  return { origLen: 0, summary: false, bookU: 0, bookQ: 0, crossU: 0, crossQ: 0, concepts: 0, sessions: 0, card: false, msgs: 0, memShort: false, memLong: false, core: false, carried: 0, tokenEst: 0,
+    /* 内容透明：不只是数量，还要让用户看到 AI 实际读到的东西 */
+    unitText: '', summaryText: '', recallText: '', carriedText: '' };
+}
 let ctxLog = emptyCtxLog();
 function resetCtxLog() { ctxLog = emptyCtxLog(); }
 async function generateCoReply(userText, s) {
@@ -1427,6 +1492,7 @@ async function generateCoReply(userText, s) {
 
   resetCtxLog();
   ctxLog.origLen = unit.length;
+  ctxLog.unitText = unit;
 
   /* ① 角色 / 聊天相关 */
   let cardText = '', memBlocks = [];
@@ -1446,7 +1512,7 @@ async function generateCoReply(userText, s) {
   if (coset.includeSummary !== false) {
     summary = await chapterSummary(chapter);
     if (!summary) summary = await generateChapterSummary(chapter);
-    if (summary) ctxLog.summary = true;
+    if (summary) { ctxLog.summary = true; ctxLog.summaryText = summary; }
   }
 
   /* ③ 本书其他章节 + ④ 跨书：三级检索 —— 每个 Session 只检索一次，结果缓存复用。
@@ -1459,9 +1525,11 @@ async function generateCoReply(userText, s) {
       ctxLog.bookU = s.recall.bookU || 0; ctxLog.bookQ = s.recall.bookQ || 0;
       ctxLog.crossU = s.recall.crossU || 0; ctxLog.crossQ = s.recall.crossQ || 0;
       ctxLog.concepts = s.recall.concepts || 0; ctxLog.sessions = s.recall.sessions || 0;
+      ctxLog.recallText = recText;
     } else {
       const rec = await buildRecall(userText + ' ' + (s.quote || ''), chapter, summary);
       recText = rec.text;
+      ctxLog.recallText = recText;
       if (s) {
         s.recall = { text: rec.text, bookU: ctxLog.bookU, bookQ: ctxLog.bookQ, crossU: ctxLog.crossU, crossQ: ctxLog.crossQ, concepts: ctxLog.concepts, sessions: ctxLog.sessions };
         if (s.persisted) await upsert('sessions', s);
@@ -1483,6 +1551,7 @@ async function generateCoReply(userText, s) {
   if (carried.length) {
     carriedText = carried.map((q, i) => `${i + 1}. ${q.text}${q.bookId && q.bookId !== S.rBook.id ? '（来自另一本书，仍在悬着）' : ''}`).join('\n');
     ctxLog.carried = carried.length;
+    ctxLog.carriedText = carriedText;
   }
 
   const instruction = `你现在和「你」一起深读《${S.rBook.title}》，这一节是「${chapter.title}」。
@@ -1490,7 +1559,7 @@ async function generateCoReply(userText, s) {
 【共读者人设卡】（这是你本场对话的身份与方式，代替完整角色背景）
 ${cardText || '（未使用角色卡）'}
 
-${memBlocks.join('\n\n') ? memBlocks.join('\n\n') + '\n' : ''}【正在讨论的原文】${s.quote ? '用户划线的这句：「' + s.quote + '」' : '（整节共读，围绕刚才滚动到的段落）'}
+${memBlocks.join('\n\n') ? memBlocks.join('\n\n') + '\n' : ''}【正在讨论的原文】${s.quote ? '用户划线的这句：「' + s.quote + '」' : '（此处共读：围绕用户当前停留、正在阅读的段落）'}
 
 【本节原文窗口（${origLen}字级）】
 ${unit}
@@ -2063,13 +2132,38 @@ $id('coCtx').addEventListener('click', openCtxView);
 function openCtxView() {
   const l = ctxLog;
   const row = (label, v) => `<div style="display:flex;justify-content:space-between;padding:7px 2px;border-bottom:1px solid var(--line-soft);font-size:13.5px;"><span>${label}</span><span style="color:${v ? 'var(--accent)' : 'var(--ink-3)'};">${v ? '✓' : '✗'}</span></div>`;
+  /* 可展开的真实内容块：不是只报数量，而是让用户看到 AI 到底读到了什么 */
+  const seg = (title, text, empty) => {
+    if (!text) return '';
+    return `<details class="ctx-detail"><summary>${esc(title)}</summary><div class="ctx-body">${esc(text)}</div></details>`
+      + (empty ? '' : '');
+  };
   const detail = l.origLen > 0
-    ? row('当前原文', `✓ ${l.origLen}字`) + row('章节精炼', l.summary) + row('本章相关理解', `✓ ${l.bookU}条`) + row('本章相关问题', `✓ ${l.bookQ}条`) + row('其他章节', l.crossU > 0 || l.crossQ > 0 ? '✓' : false) + row('跨书', (l.crossU + l.crossQ) > 0 ? `✓ ${l.crossU + l.crossQ}条` : false) + row('概念引用', l.concepts > 0 ? `✓ ${l.concepts}条` : false) + row('角色浓缩人设', l.card) + row('最近对话', `✓ ${l.msgs}条`) + row('核心记忆', l.core) + row('长期记忆', l.memLong) + row('带着的问题', l.carried > 0 ? `✓ ${l.carried}条` : false) + row('预估 token', `~${l.tokenEst}`)
+    ? row('当前原文', `✓ ${l.origLen}字`)
+      + row('章节精炼', l.summary)
+      + row('本章相关理解', `${l.bookU}条`)
+      + row('本章相关问题', `${l.bookQ}条`)
+      + row('跨书记录（理解/问题）', `${l.crossU + l.crossQ}条`)
+      + row('概念引用', l.concepts > 0 ? `${l.concepts}条` : false)
+      + row('会话摘要引用', l.sessions > 0 ? `${l.sessions}条` : false)
+      + row('角色浓缩人设', l.card)
+      + row('最近对话', `✓ ${l.msgs}条`)
+      + row('核心记忆', l.core)
+      + row('长期记忆', l.memLong)
+      + row('带着的问题', l.carried > 0 ? `${l.carried}条` : false)
+      + row('预估 token', `~${l.tokenEst}`)
     : '<div class="empty">开始一次共读后，这里会展示<br>AI 每一轮实际看到的上下文</div>';
+  const bodyBlocks = [
+    seg('这轮读到的原文窗口', l.unitText && l.unitText.slice(0, 1200) + (l.unitText.length > 1200 ? ' …' : '')),
+    seg('这轮注入的章节精炼', l.summaryText && l.summaryText.slice(0, 1200) + (l.summaryText.length > 1200 ? ' …' : '')),
+    seg('这轮召回的相关记录（理解/问题/概念/摘要）', l.recallText),
+    seg('这轮注入的「带着的问题」', l.carriedText),
+  ].join('');
   openSheet({
     title: '本次共读上下文',
-    html: `<div style="font-size:12px;color:var(--ink-3);margin-bottom:8px;">这是最近一次共读 AI 真正收到的内容。你可以据此调整「设置 → 共读设置」里的数量与开关。</div>
+    html: `<div style="font-size:12px;color:var(--ink-3);margin-bottom:8px;">这是最近一次共读 AI 真正收到的内容。点「▾」可展开看具体文字；数量与开关在「设置 → 共读设置」里调。</div>
       <div class="ctx-card">${detail}</div>
+      ${bodyBlocks ? `<div class="ctx-blocks">${bodyBlocks}</div>` : ''}
       <div class="btn-row"><button class="btn-c" id="ctxClose">关闭</button></div>`,
     onOpen: (root) => {
       root.querySelector('#ctxClose').addEventListener('click', closeTopSheet);
@@ -2747,42 +2841,42 @@ async function openBookDetail(bookId) {
   const questions = S.questions.filter(q => q.bookId === bookId);
   const resonates = S.annotations.filter(a => a.bookId === bookId && a.type === 'resonate');
   const coCount = S.sessions.filter(s => s.bookId === bookId).length;
-  const pct = totalParas(book) ? Math.round((book.currentParaNum / totalParas(book)) * 100) : 0;
   const chTitle = bookCurrentChapterTitle(book);
 
-  const grown = [['概念', concepts], ['理解', understandings], ['问题', questions], ['共鸣', resonates], ['实践', practices], ['改变', changes]];
+  /* 两个世界分开呈现：
+     ■ 这本书本身：概念（书的世界）
+     ■ 我在这里留下的：理解 / 问题 / 共鸣（我的世界）—— 实践与改变只给去「生活」的入口 */
   openSheet({
     title: book.title,
     html: `
-      <div style="text-align:center;font-size:12.5px;color:var(--ink-3);margin-bottom:10px;">${esc(chTitle || '未开始')} · 上次阅读 ${book.lastReadAt ? timeAgo(book.lastReadAt) : '—'}</div>
-      <div class="stat-grid">
-        <div class="st"><b>${pct}%</b><span>已读</span></div>
-        <div class="st"><b>${coCount}</b><span>共读</span></div>
-        <div class="st"><b>${concepts.length + understandings.length}</b><span>思想</span></div>
-        <div class="st"><b>${questions.length}</b><span>问题</span></div>
-      </div>
+      <div style="text-align:center;font-size:12.5px;color:var(--ink-3);margin-bottom:10px;">${esc(chTitle || '未开始')} · 上次阅读 ${book.lastReadAt ? timeAgo(book.lastReadAt) : '—'} · 共读 ${coCount} 次</div>
       <div class="btn-row"><button class="btn-p" id="bdContinue">继续阅读</button></div>
-      <div class="section-label" style="margin-top:20px;">从这本书长出来的</div>
-      <div class="grown-grid">
-        ${grown.map(([label, list]) => `<button class="grown-cell" data-type="${label}"><b>${list.length}</b><span>${esc(label)}</span></button>`).join('')}
+
+      <div class="section-label" style="margin-top:20px;">这本书本身</div>
+      ${concepts.length
+        ? concepts.slice(0, 5).map(i => `<div class="mini-line" data-ciid="${esc(i.id)}"><span style="color:var(--gold);font-size:10px;">◇</span>${esc(i.term + (i.def ? '：' + i.def.slice(0, 30) : ''))}</div>`).join('')
+        : '<div class="empty" style="padding:14px;">读完一些章节后，书里的概念会被整理在这里</div>'}
+
+      <div class="section-label" style="margin-top:18px;">我在这里留下的</div>
+      <div class="two-world">
+        <button class="world-cell" id="bdU"><b>${understandings.length}</b><span>理解</span></button>
+        <button class="world-cell" id="bdQ"><b>${questions.length}</b><span>问题</span></button>
+        <button class="world-cell" id="bdR"><b>${resonates.length}</b><span>共鸣</span></button>
       </div>
-      ${concepts.length ? '<div class="section-label" style="margin-top:14px;">最近的概念</div>' + concepts.slice(0, 3).map(i => `<div class="mini-line" data-ciid="${esc(i.id)}"><span style="color:var(--gold);font-size:10px;">◇</span>${esc(i.term + (i.def ? '：' + i.def.slice(0, 30) : ''))}</div>`).join('') : ''}
       ${understandings.length ? '<div class="section-label">最近的理解</div>' + understandings.slice(0, 3).map(i => `<div class="mini-line" data-iid="${esc(i.id)}"><span style="color:var(--gold);font-size:10px;">·</span>${esc(String(i.text).slice(0, 42))}</div>`).join('') : ''}
       ${questions.length ? '<div class="section-label">悬着的问题</div>' + questions.slice(0, 3).map(q => `<div class="mini-line" data-qid="${esc(q.id)}"><span style="color:var(--gold);font-size:10px;">？</span>${esc(String(q.text).slice(0, 42))}</div>`).join('') : ''}
+
+      <div class="section-label" style="margin-top:18px;">书进入生活</div>
+      <button class="row-btn" id="bdLife">去「生活」看实践 ${practices.length ? `(${practices.length})` : ''} 与改变 ${changes.length ? `(${changes.length})` : ''} →</button>
+
       <div class="btn-row"><button class="btn-c" id="bdClose">关闭</button></div>`,
     onOpen: (root) => {
       root.querySelector('#bdContinue').addEventListener('click', () => { closeTopSheet(); openReader(bookId); });
       root.querySelector('#bdClose').addEventListener('click', closeTopSheet);
-      root.querySelectorAll('.grown-cell').forEach(c => c.addEventListener('click', () => {
-        const t = c.dataset.type;
-        closeTopSheet();
-        if (t === '实践' || t === '改变') {
-          switchTab('life');
-        } else {
-          switchTab('mind');
-          renderMind(t);
-        }
-      }));
+      root.querySelector('#bdLife').addEventListener('click', () => { closeTopSheet(); switchTab('life'); });
+      root.querySelector('#bdU').addEventListener('click', () => { closeTopSheet(); switchTab('mind'); renderMind('我的理解'); });
+      root.querySelector('#bdQ').addEventListener('click', () => { closeTopSheet(); switchTab('mind'); renderMind('问题'); });
+      root.querySelector('#bdR').addEventListener('click', () => { closeTopSheet(); switchTab('mind'); renderMind('共鸣'); });
       root.querySelectorAll('.mini-line[data-iid]').forEach(el => el.addEventListener('click', () => { closeTopSheet(); openInsightDetail(el.dataset.iid); }));
       root.querySelectorAll('.mini-line[data-ciid]').forEach(el => el.addEventListener('click', () => { closeTopSheet(); openConceptDetail(el.dataset.ciid); }));
       root.querySelectorAll('.mini-line[data-qid]').forEach(el => el.addEventListener('click', () => { closeTopSheet(); openQuestionDetail(el.dataset.qid); }));
@@ -3020,7 +3114,9 @@ async function runChangeAnalysis(force) {
   }
   const understandings = S.insights.filter(i => displayType(i.type) === '我的理解');
   const practices = S.practices || [];
-  const answered = S.questions.filter(q => q.status === 'answered');
+  /* 修复：问题从创建到被回应 status 始终是 open，原判断永远为空。
+     改为以「是否已有回应内容」为准，让问题这一路信号真正进入改变分析。 */
+  const answered = S.questions.filter(q => (Array.isArray(q.answers) && q.answers.length) || q.answerText);
   const totalSignals = understandings.length + practices.length + answered.length;
   if (totalSignals < 3) return;  // 样本不足，不做分析
   try {
