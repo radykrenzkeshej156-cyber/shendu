@@ -157,8 +157,20 @@ async function listData(col) {
 async function lightAI({ messages, apiConfigId, timeoutMs }) {
   const cfgId = apiConfigId || (S.coset ? S.coset.smallApi : null);
   const params = { messages };
-  if (cfgId) params.apiConfigId = cfgId;
   if (timeoutMs) params.timeoutMs = timeoutMs;
+  if (cfgId) {
+    /* 指定了小模型配置：优先用它；若配置 ID 无效、返回空或调用失败，自动回退默认 API，
+       保证精炼/召回/摘要等杂活永不因一个填错的 ID 而中断 */
+    try {
+      const r = await A.ai.chat({ ...params, apiConfigId: cfgId });
+      if (r && (r.text || r.content)) return r;
+      console.warn('[深读] 指定小模型配置返回空，回退默认 API');
+      return await A.ai.chat(params);
+    } catch (e) {
+      console.warn('[深读] 指定小模型配置调用失败，回退默认 API', e && e.message ? e.message : e);
+      return await A.ai.chat(params);
+    }
+  }
   return await A.ai.chat(params);
 }
 async function lightAIText(system, user, opts) {
@@ -763,15 +775,15 @@ function bindChapterSummaryCard() {
   });
   card.querySelector('[data-refresh]')?.addEventListener('click', async () => {
     toast('正在重新生成章节精炼…');
-    await refreshChapterSummary(S.rChapter);
+    const ok = await refreshChapterSummary(S.rChapter);
     renderChapter();
-    toast('精炼已更新');
+    toast(ok ? '精炼已更新' : '精炼生成失败，请检查 API 设置');
   });
   card.querySelector('[data-gen]')?.addEventListener('click', async () => {
     toast('正在生成章节精炼…');
-    await generateChapterSummary(S.rChapter);
+    const ok = await generateChapterSummary(S.rChapter);
     renderChapter();
-    toast('精炼已生成');
+    toast(ok ? '精炼已生成' : '精炼生成失败，请检查 API 设置');
   });
   card.querySelector('.cs-fold')?.addEventListener('click', () => {
     const b = card.querySelector('.cs-body');
@@ -825,6 +837,8 @@ function jumpReaderTo(chapterId, paraLocal) {
   S.rBook.currentParaNum = S.rParaCur;
   $id('rChapTitle').textContent = S.rChapter.title;
   renderChapter();
+  /* 切换章节后回到开头，避免沿用上一章的滚动位置 */
+  $id('rScroll').scrollTop = 0;
   saveProgress();
   saveReadingState({ chapterId, paraNum: S.rParaCur });
   $id('rNextHint').hidden = true;
@@ -1147,7 +1161,8 @@ function openTocSheet(bookId, currentChapterId) {
   const book = S.books.find(b => b.id === bookId);
   if (!book) return;
   const chapters = book.chapterMeta || [];
-  const html = `<div class="s-title">目录</div>` +
+  /* 标题由 openSheet 的 title 渲染，这里不要再拼 s-title，否则会出现两个「目录」 */
+  const html = '' +
     chapters.map((c, i) => {
       const isCur = c.cid === (currentChapterId || book.currentChapterId);
       return `<button class="row-btn${isCur ? ' current' : ''}" data-cid="${esc(c.cid)}" data-i="${i}"
@@ -1226,7 +1241,21 @@ async function openCoRead(mode, quote, paraNum, local) {
   const ok = await ensureCompanion();
   if (!ok) return;
   if (!S.rChapter) { toast('请先打开一本书'); return; }
-  newCoSession(mode, quote, paraNum, local);
+  if (mode !== 'quote') {
+    /* 点「共读」优先回到本章最近一次话题，而不是每次都开新话题；
+       只有当前章节还没有过对话时才新建 */
+    await loadCoSessionFor(S.rChapter.id);
+    const sess = S.coSession;
+    if (sess && sess.chapterId === S.rChapter.id && sess.msgs && sess.msgs.length) {
+      /* 复用旧话题，并把讨论位置跟到用户当前阅读处 */
+      sess.paraNum = paraNum || sess.paraNum;
+    } else {
+      newCoSession(mode, quote, paraNum, local);
+    }
+  } else {
+    /* 划线共读始终围绕选中的这句，单独开一场 */
+    newCoSession(mode, quote, paraNum, local);
+  }
   /* 4.0：划线共读时抽屉降矮，正文留在视野上方——「在读中谈」，而不是挡住书 */
   const drawer = $id('coDrawer');
   drawer.classList.toggle('quote-mode', mode === 'quote');
@@ -1583,6 +1612,7 @@ ${userText}
 4. 不要替用户总结人生，不要替用户制定实践方案，不要擅自宣布用户发生了变化。
 
 【沉淀规则（严格）】
+用户可以随时自己「记下来」，所以你的主动建议只是补充，不是主入口——只在用户已经明显流露出「想留下这个想法」的倾向时才输出，不要每轮都扫描、更不要抢在用户前面替他决定。
 只有当你观察到用户形成了「值得长期保存」的理解或问题时，才在回复末尾单独输出一段：
 【可能值得保存】
 类型：理解 或 问题
@@ -1591,6 +1621,7 @@ ${userText}
 - 问题：无法一句话解决、值得继续思考/阅读/在生活中验证的开放问题。
 禁止：
 - 不要因为一句普通感想就输出；不要为了凑数而总结；
+- 用户已经明确说「记一下」「这个我留着」之后，不要再重复建议同类内容；
 - 绝不建议「共鸣」（那是用户主动收藏的瞬间感受）；
 - 绝不建议「实践」，更不要替用户设计行动方案；
 - 绝不判断用户「改变了」；
@@ -1951,16 +1982,23 @@ async function addQuestionAnswer(q, text) {
   const content = (text || q.answerText || '').trim();
   if (!content) return false;
   if (!Array.isArray(q.answers)) q.answers = [];
-  q.answers.push({ text: content, at: Date.now() });
+  /* 记录回应发生时的出处书：若与问题的出处书不同，就是一次可见的「跨书连接」 */
+  const ansBookId = (S.rBook && S.rBook.id) || q.bookId || null;
+  const ansChapterId = (S.rChapter && S.rChapter.id) || q.chapterId || null;
+  const ansPara = (S.rParaCur || 0) || q.paraNum || 0;
+  const crossBook = ansBookId && q.bookId && ansBookId !== q.bookId;
+  q.answers.push({ text: content, at: Date.now(), bookId: ansBookId, chapterId: ansChapterId, paraNum: ansPara, crossBook: !!crossBook });
   q.answerText = content;
   q.answeredAt = Date.now();
   q.status = 'open';  // 一直悬着，等下一次回应
   await upsert('questions', q);
+  /* 回应沉淀为理解：跨书回应时，把理解挂到当下正在读的那本书，
+     让「旧问题 × 新书」的连接落在正确的书上 */
   await createInsight('我的理解', content, {
     tags: q.tags || [],
-    bookId: q.bookId, chapterId: q.chapterId, paraNum: q.paraNum, quote: q.quote,
+    bookId: ansBookId, chapterId: ansChapterId, paraNum: ansPara, quote: (S.rBook && S.rBook.id === ansBookId) ? q.quote : '',
   });
-  addTimelineEvent('旧问题收到新回应', `${q.text} → ${content}`, 'question', { bookId: q.bookId, chapterId: q.chapterId });
+  addTimelineEvent(crossBook ? '旧问题被另一本书回应' : '旧问题收到新回应', `${q.text} → ${content}`, 'question', { bookId: ansBookId, chapterId: ansChapterId });
   return true;
 }
 /* 4.0 携带问题：把问题「带着」继续读，阅读器顶部会出现胶囊，共读时作为上下文注入。 */
@@ -2234,15 +2272,9 @@ async function renderMind(filter) {
   const typeTabs = [['all', '全部'], ['我的理解', '理解'], ['问题', '问题'], ['共鸣', '共鸣']];
   let html = `<div class="h-row"><div><div class="h-page">思想</div>
     <div class="h-sub">我与书的互动 · 理解 / 问题 / 共鸣</div></div></div>
-    <div class="mind-tabs">${typeTabs.map(t => `<button data-f="${t[0]}" class="${S.mindFilter === t[0] ? 'active' : ''}">${t[1]}</button>`).join('')}</div>
-    <div class="view-switch">
-      <button id="vw-timeline" class="${S.mindView === 'timeline' ? 'active' : ''}">时间线</button>
-      <button id="vw-map" class="${S.mindView === 'map' ? 'active' : ''}">地图</button>
-    </div>`;
+    <div class="mind-tabs">${typeTabs.map(t => `<button data-f="${t[0]}" class="${S.mindFilter === t[0] ? 'active' : ''}">${t[1]}</button>`).join('')}</div>`;
 
-  if (S.mindView === 'map') {
-    html += renderMindMap();
-  } else if (S.mindFilter === 'all') {
+  if (S.mindFilter === 'all') {
     /* 4.0 思想页信息优先级：悬而未决的问题（含正携带的）置顶——这是空间的主角；
        理解按生命线陈列（一条理解 + 它的再想/修正）；时间线降级为次级视图；共鸣单列。 */
     const roots = S.insights.filter(i => i.rootId == null && displayType(i.type) === '我的理解').sort((a, b) => b.growthAt - a.growthAt);
@@ -2263,9 +2295,6 @@ async function renderMind(filter) {
       html += renderInsightList(roots.slice(0, 5));
       if (roots.length > 5) html += `<button class="more-link" data-f="我的理解">看全部 ${roots.length} 条 →</button>`;
     }
-    /* 时间线降级为次级视图 */
-    html += '<div class="section-label">最 近 足 迹 <span style="font-weight:400;color:var(--ink-3);">· 时间线</span></div>';
-    html += renderTimelineList();
     /* 共鸣单列（安静的收藏夹） */
     if (resonates.length) {
       html += '<div class="section-label">共 鸣 <span style="font-weight:400;color:var(--ink-3);">· 被击中瞬间的收藏</span></div>';
@@ -2503,9 +2532,6 @@ function renderTimelineList() {
 }
 function bindMindEvents() {
   $qa('#mindBody .mind-tabs button').forEach(b => b.addEventListener('click', () => renderMind(b.dataset.f)));
-  const vT = $id('vw-timeline'), vM = $id('vw-map');
-  if (vT) vT.addEventListener('click', () => { S.mindView = 'timeline'; renderMind(); });
-  if (vM) vM.addEventListener('click', () => { S.mindView = 'map'; renderMind(); });
   $qa('#mindBody .thought-item').forEach(el => el.addEventListener('click', (e) => {
     if (e.target.closest('.mini-tag')) return;
     openInsightDetail(el.dataset.iid);
@@ -2606,11 +2632,15 @@ async function openQuestionDetail(id) {
       ${tagChips ? `<div class="tag-row" style="margin-bottom:10px;">${tagChips}</div>` : ''}
       ${q.carrying ? '<div class="carry-tag" style="margin-bottom:10px;">✈ 正带着它读</div>' : ''}
       <div class="section-label">这条问题的回应（${answers.length}）</div>
-      ${answers.length ? answers.slice().reverse().map(a => `
-        <div style="padding:10px 0;border-bottom:1px dashed var(--line);">
+      ${answers.length ? answers.slice().reverse().map(a => {
+        const aBook = a.bookId ? S.books.find(b => b.id === a.bookId) : null;
+        const aCross = (a.crossBook) || (a.bookId && q.bookId && a.bookId !== q.bookId);
+        return `<div style="padding:10px 0;border-bottom:1px dashed var(--line);">
           <div style="font-size:13.5px;line-height:1.7;">${esc(a.text)}</div>
-          <div style="font-size:10.5px;color:var(--ink-3);margin-top:4px;">${a.at ? timeAgo(a.at) : ''} 的回应</div>
-        </div>`).join('') : '<div class="empty" style="padding:14px;">还没有回应，悬着</div>'}
+          ${aCross && aBook ? `<div class="connect-tag">↔ 来自另一本书 · ${esc(aBook.title)}</div>` : ''}
+          <div style="font-size:10.5px;color:var(--ink-3);margin-top:4px;">${a.at ? timeAgo(a.at) : ''} 的回应${aBook && !aCross ? ' · ' + esc(aBook.title) : ''}</div>
+        </div>`;
+      }).join('') : '<div class="empty" style="padding:14px;">还没有回应，悬着</div>'}
       <div class="section-label">来自</div>
       <div style="font-size:13px;color:var(--ink-2);line-height:1.7;margin-bottom:8px;">${book ? '📖 ' + esc(book.title) + (chTitle ? ' · ' + esc(chTitle) : '') : '（无出处）'}
       ${q.quote ? '<br>「' + esc(String(q.quote).slice(0, 80)) + '…」' : ''}</div>
@@ -3204,9 +3234,9 @@ function openCoreadSettings() {
       <div class="type-chips">${summaryLenOptions.map(n => `<button class="type-chip${(coset.summaryLen || 800) === n ? ' sel' : ''}" data-sl="${n}">${n}字</button>`).join('')}</div></div>
     <div class="field"><label>共读角色浓缩卡</label>
       <textarea id="cardInput" placeholder="${esc(DEFAULT_CARD)}" style="min-height:80px;">${coset.card ? esc(coset.card) : ''}</textarea></div>
-    <div class="field"><label>小模型 API 配置 ID（可选，用于精炼/概念提取/召回筛选/摘要等杂活；留空用默认 API）</label>
-      <input type="text" id="smallApiInput" placeholder="配置 ID，如 deepseek-chat" value="${esc(coset.smallApi || '')}"></div>
-    <div class="field" style="font-size:12px;color:var(--ink-3);">杂活走小模型 <code>ai.chat</code>，共读回复仍走大模型角色链路。两者都在「设置 → API 设置」配置。</div>`;
+    <div class="field"><label>小模型 API 配置 ID（可选）</label>
+      <input type="text" id="smallApiInput" placeholder="留空 = 用默认 API（推荐）" value="${esc(coset.smallApi || '')}"></div>
+    <div class="field" style="font-size:12px;color:var(--ink-3);">精炼/概念提取/召回筛选等杂活走小模型，共读回复仍走大模型角色链路。留空最稳，用默认 API；若填入了无法调用的配置，会自动回退默认 API。</div>`;
 
   const recallHtml = `智能检索 · 数量限制
     <div class="field"><label>本书理解 ≤</label>
@@ -3256,8 +3286,7 @@ function openCoreadSettings() {
         <div class="section-label">本次共读 AI 看到的上下文</div>
         ${ctxState}
       </div>
-      <div style="margin-top:18px;"><button class="change-btn" id="csChange">✧ 手动运行「改变」周期分析</button>
-      <div style="font-size:11.5px;color:var(--ink-3);margin-top:4px;">改变不会在普通共读中自动判断；它只在这里（手动）或积累一段阅读周期后由独立分析提出，你确认后才会保存。</div></div>`,
+      `,
     onOpen: (root) => {
       /* 最近对话条数 */
       root.querySelectorAll('.type-chip[data-n]').forEach(c => c.addEventListener('click', () => {
@@ -3300,13 +3329,7 @@ function openCoreadSettings() {
         closeTopSheet();
         toast('已保存');
       });
-      root.querySelector('#csChange').addEventListener('click', async () => {
-        toast('开始分析…');
-        await runChangeAnalysis(true);
-        closeTopSheet();
-        toast('分析完成，如发现改变会出现在「生活」');
-      });
-    },
+      },
   });
 }
 

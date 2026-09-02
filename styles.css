@@ -114,6 +114,12 @@ input, textarea { font-family: inherit; }
 .q-item.carrying { border-left-color: var(--gold); background: #fffdf8; }
 .q-item .bd { font-size: 14.5px; line-height: 1.6; }
 .carry-tag { display: inline-block; font-size: 10.5px; color: #8a6a2f; background: var(--gold-soft); border: 1px solid #eedfc4; border-radius: 100px; padding: 2px 9px; margin: 6px 0 2px; letter-spacing: .5px; }
+/* 跨书连接标记：一个旧问题被另一本书回应了 */
+.connect-tag {
+  display: inline-block; font-size: 10.5px; line-height: 1.6;
+  color: #7d5ba3; background: #f3edf8; border: 1px solid #e2d7ef;
+  border-radius: 100px; padding: 2px 10px; margin-top: 6px; letter-spacing: .5px;
+}
 .q-item .ans { margin-top: 9px; padding: 9px 11px; background: #f6f2ea; border-radius: 9px; font-size: 12.5px; line-height: 1.6; color: var(--ink-2); }
 .q-item .mt { font-size: 11px; color: var(--ink-3); margin-top: 7px; }
 .resonate-item { padding: 14px 16px; margin-bottom: 10px; cursor: pointer; }
@@ -371,4 +377,7 @@ input, textarea { font-family: inherit; }
   max-height: 46dvh; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
 }
 
+/* 任何被置了 hidden 属性的元素都必须真正隐藏，
+   防止 .r-carry / .chip-nav 的 display:flex 覆盖默认隐藏，导致空胶囊条、常驻「下一章」按钮挡视野 */
+[hidden] { display: none !important; }
 .hidden { display: none !important; }
