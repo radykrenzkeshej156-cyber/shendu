@@ -6,7 +6,7 @@
 <title>深读</title>
 <link rel="stylesheet" href="styles.css">
 </head>
-<body>
+<body data-theme="day">
 <div id="app" class="app">
 
   <main class="pages">
@@ -17,29 +17,47 @@
   </main>
 
   <nav class="tabbar" id="tabbar">
-    <button data-tab="desk" class="active"><span class="ic">⌂</span><span>此刻</span></button>
-    <button data-tab="lib"><span class="ic">▤</span><span>书库</span></button>
-    <button data-tab="mind"><span class="ic">✧</span><span>思想</span></button>
-    <button data-tab="life"><span class="ic">☘</span><span>生活</span></button>
+    <button data-tab="desk" class="active"><span class="ic">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.2"/><circle cx="12" cy="12" r="9"/></svg>
+    </span><span>此刻</span></button>
+    <button data-tab="lib"><span class="ic">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V6"/><path d="M4 6h12l2 3 2 9H4"/><path d="M8.5 6 10 9.5h7"/><path d="M4 20h16"/></svg>
+    </span><span>书架</span></button>
+    <button data-tab="mind"><span class="ic">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7.5h10"/><path d="M7 12h10"/><path d="M7 16.5h6"/><rect x="3.5" y="3.5" width="17" height="17" rx="3"/></svg>
+    </span><span>思想</span></button>
+    <button data-tab="life"><span class="ic">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4c1 5 4 7.5 8 8"/><path d="M12 5c-4 0-6.5 1.5-7.5 4 4 .5 6.5 2 7.5 5.5 2.5-3.5 2.5-6.5 0-9.5z"/></svg>
+    </span><span>生活</span></button>
   </nav>
 
   <div id="reader" class="reader">
     <header class="reader-top" id="readerTop">
-      <button class="rbtn" id="rBack" aria-label="返回">‹</button>
+      <button class="rbtn" id="rBack" aria-label="返回">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke-width="1.8" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+      </button>
       <div class="r-chap">
         <span id="rChapTitle">——</span>
         <span class="r-progress" id="rProgress"></span>
       </div>
-      <button class="rbtn" id="rToc" aria-label="目录">☰</button>
+      <button class="rbtn" id="rToc" aria-label="目录">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke-width="1.8" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/></svg>
+      </button>
     </header>
     <div id="rCarryBar" class="r-carry" hidden></div>
     <div class="reader-scroll" id="rScroll">
       <div class="reader-inner" id="rInner"></div>
     </div>
     <footer class="reader-bottom" id="readerBottom">
-      <button id="rCo"><span class="ic av" id="rCoAvatar">··</span><span id="rCoName">共读</span></button>
-      <button id="rDetail"><span class="ic">◈</span><span>详情</span></button>
-      <button id="rMind"><span class="ic">✧</span><span>思想</span></button>
+      <button id="rCo"><span class="ic">
+        <svg viewBox="0 0 24 24" class="av-ico" width="20" height="20" fill="none" stroke-width="1.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 10h.01M15.5 10h.01M8.5 14.5c1.2.9 2.6 1.3 3.5 1.3s2.3-.4 3.5-1.3"/></svg>
+      </span><span id="rCoName">共读</span></button>
+      <button id="rDetail"><span class="ic">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke-width="1.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="M12 8v4M12 16h.01"/></svg>
+      </span><span>详情</span></button>
+      <button id="rMind"><span class="ic">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke-width="1.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M8 9h8M8 12.5h8M8 16h5"/></svg>
+      </span><span>思想</span></button>
     </footer>
     <div class="chip-nav" id="rNextHint" hidden><button id="rNextBtn">下一章 ›</button></div>
   </div>

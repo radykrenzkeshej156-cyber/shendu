@@ -227,6 +227,7 @@ async function loadCoreadSettings() {
   const s = rows.find(x => x.id === 'coread');
   if (s) {
     S.companionId = s.companionId || null;
+    if (s.theme) applyTheme(s.theme);
     const d = defaultCoset();
     S.coset = {
       ctxMsgs: s.ctxMsgs || d.ctxMsgs,
@@ -250,16 +251,7 @@ async function loadCoreadSettings() {
   }
 }
 async function saveCoreadSettings() {
-  await upsert('settings', {
-    id: 'coread', companionId: S.companionId,
-    ctxMsgs: S.coset.ctxMsgs, memShort: S.coset.memShort, memLong: S.coset.memLong,
-    card: S.coset.card, smallApi: S.coset.smallApi, origLen: S.coset.origLen,
-    summaryLen: S.coset.summaryLen,
-    recall: S.coset.recall,
-    includeSummary: S.coset.includeSummary, includeCard: S.coset.includeCard,
-    includeMsgs: S.coset.includeMsgs, includeMemShort: S.coset.includeMemShort,
-    includeMemLong: S.coset.includeMemLong, includeCore: S.coset.includeCore,
-  });
+  await upsert('settings', Object.assign({}, coreadSettingsRec()));
 }
 
 /* ───────── 章节切分 ───────── */
@@ -310,11 +302,37 @@ const S = {
   concepts: [], practices: [], changes: [], sessions: [], annotations: [],
   companionId: null,
   coset: defaultCoset(),
+  theme: 'day',
   rBook: null, rChapter: null, rChapters: [], rParas: [],
   rParaCur: 0, rParaLocal: 0, rUI: false, rMaxLoaded: 400, readerChapterIndex: 0,
   coSession: null, generating: false,
   mindFilter: 'all', mindBookId: null, mindView: 'timeline', mapTopic: null, mindQuery: '',
-};/* ───────── 章节地图 / 精炼摘要（服务共读上下文，非用户总结） ───────── */
+};
+
+/* ───────── 主题（Day 雾白 / Night 炭黑） ───────── */
+function applyTheme(t) {
+  S.theme = t === 'night' ? 'night' : 'day';
+  document.body.setAttribute('data-theme', S.theme);
+}
+function toggleTheme() {
+  applyTheme(S.theme === 'night' ? 'day' : 'night');
+  upsert('settings', { ...coreadSettingsRec(), id: 'coread', theme: S.theme });
+  toast(S.theme === 'night' ? '夜晚' : '雾白');
+}
+/* 组装 coread 设置记录（含 theme 字段） */
+function coreadSettingsRec() {
+  const c = S.coset || defaultCoset();
+  return {
+    id: 'coread', companionId: S.companionId,
+    theme: S.theme,
+    ctxMsgs: c.ctxMsgs, memShort: c.memShort, memLong: c.memLong,
+    card: c.card, smallApi: c.smallApi, origLen: c.origLen,
+    summaryLen: c.summaryLen, recall: c.recall,
+    includeSummary: c.includeSummary, includeCard: c.includeCard,
+    includeMsgs: c.includeMsgs, includeMemShort: c.includeMemShort,
+    includeMemLong: c.includeMemLong, includeCore: c.includeCore,
+  };
+}/* ───────── 章节地图 / 精炼摘要（服务共读上下文，非用户总结） ───────── */
 async function chapterSummary(ch) {
   if (!ch) return '';
   if (ch.summary && ch.summaryAt) return ch.summary;
@@ -482,6 +500,14 @@ function bookCurrentChapterTitle(book) {
 function bookBt(book) {
   return (book.format === 'epub' ? 'epub · ' : '');
 }
+/* 拟真书封：有上传封面显示图片，否则用书名 + 底色渲染 */
+function bookCoverHtml(b, cls) {
+  const c = cls || '';
+  if (b && b.coverImg) {
+    return `<div class="cover ${c}" style="background-color:${esc(b.coverColor || '#d8d0c2')};"><img src="${esc(b.coverImg)}" alt="${esc(b.title || '')}"></div>`;
+  }
+  return `<div class="cover ${c}" style="background-color:${esc(b.coverColor || '#d8d0c2')};"><span class="cover-t">${esc(b.title || '书')}</span></div>`;
+}
 
 /* ───────── 此刻（4.1：从「书桌」改为循环仪表盘，不是书架快照） ─────────
    打开 App 看到的是「我正在进行的思想」：正在读 / 带着的问题 / 进行中的实践 / 最近长出的。 */
@@ -506,24 +532,31 @@ async function renderDesk() {
   if (latestIdea) growPicks.push({ kind: '理解', rec: latestIdea });
   if (latestReso) growPicks.push({ kind: '共鸣', rec: latestReso });
 
-  let html = `<div class="h-row"><div><div class="h-page">此刻</div>
+let html = `<div class="h-row"><div><div class="h-page">此刻</div>
     <div class="h-sub">${new Date().toLocaleDateString('zh-CN', { weekday: 'long', month: 'long', day: 'numeric' })}</div></div>
-    <button class="h-btn" id="deskSettings">设置</button></div>`;
+    <div style="display:flex;gap:8px;align-items:center;">
+      <button class="ghost-ico" id="deskTheme" aria-label="切换主题">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13.2A8.2 8.2 0 1 1 10.8 4a6.6 6.6 0 0 0 9.2 9.2z"/></svg>
+      </button>
+      <button class="ghost-ico" id="deskResonate" aria-label="共鸣">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20c-4.5-3.4-8-6.5-8-10.3C4 6.2 6.2 4 9.2 4c1.7 0 2.8 1 2.8 2.6C12 5 13.1 4 14.8 4 17.8 4 20 6.2 20 9.7c0 3.8-3.5 6.9-8 10.3z"/></svg>
+      </button>
+      <button class="h-btn" id="deskSettings">设置</button>
+    </div></div>`;
 
-  /* 正在读 */
+  /* 正在读：只显示一本，大封面 */
   html += '<div class="section-label">正 在 读</div>';
-  if (reading.length) {
-    html += reading.map(b => {
-      const chTitle = bookCurrentChapterTitle(b);
-      return `<div class="now-card card" data-bid="${esc(b.id)}">
-        <div class="cover" style="background:${esc(b.coverColor || '#6f5d48')};">${esc((b.title || '书')[0])}</div>
-        <div class="info"><div class="t">${esc(b.title)}</div>
-        <div class="m">${chTitle ? esc(chTitle) : ''} · ${timeAgo(b.lastReadAt)}</div></div>
-        <div class="go">›</div>
-      </div>`;
-    }).join('');
+  const b = reading[0];
+  if (b) {
+    const chTitle = bookCurrentChapterTitle(b);
+    html += `<div class="now-row" data-bid="${esc(b.id)}">
+      ${bookCoverHtml(b)}
+      <div class="now-meta"><div class="t">${esc(b.title)}</div>
+      <div class="m">${chTitle ? esc(chTitle) : ''}<br>${timeAgo(b.lastReadAt)}</div>
+      <span class="go">›</span></div>
+    </div>`;
   } else {
-    html += '<div class="empty" style="padding:20px 18px;">还没有在读的书<br>去书库导入一本吧</div>';
+    html += '<div class="empty" style="padding:20px 0;">还没有在读的书<br>去书架导入一本吧</div>';
   }
 
   /* 带着的问题 */
@@ -581,7 +614,11 @@ async function renderDesk() {
   $id('deskBody').innerHTML = html;
   const dst = $id('deskSettings');
   if (dst) dst.addEventListener('click', openCoreadSettings);
-  $qa('#deskBody .now-card').forEach(c => c.addEventListener('click', () => openReader(c.dataset.bid)));
+  const dth = $id('deskTheme');
+  if (dth) dth.addEventListener('click', toggleTheme);
+  const drs = $id('deskResonate');
+  if (drs) drs.addEventListener('click', () => { switchTab('mind'); renderMind('共鸣'); });
+  $qa('#deskBody .now-row').forEach(c => c.addEventListener('click', () => openReader(c.dataset.bid)));
   $qa('#deskBody .q-item[data-qid]').forEach(el => el.addEventListener('click', () => openQuestionDetail(el.dataset.qid)));
   $qa('#deskBody .thought-item[data-pid]').forEach(el => el.addEventListener('click', () => openPracticeDetail(el.dataset.pid)));
 }
@@ -602,26 +639,31 @@ async function renderLib(groupId) {
     const g = S.groups.find(x => x.id === cur);
     filtered = g ? S.books.filter(b => (g.bookIds || []).includes(b.id)) : [];
   }
-  let html = `<div class="h-page">书库</div>
-    <div class="shelf-line">
+  let html = `<div class="h-row"><div><div class="h-page">书架</div>
+    <div class="h-sub">${S.books.length} 本书</div></div>
+    <button class="shelf-add" id="libAddBtn" aria-label="添加">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke="currentColor" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+    </button></div>
+    <div class="shelf-head">
       <button class="shelf-tab ${cur === 'all' ? 'active' : ''}" data-g="all">全部</button>
       ${S.groups.map(g => `<button class="shelf-tab ${cur === g.id ? 'active' : ''}" data-g="${esc(g.id)}">${esc(g.name)}</button>`).join('')}
-      <button class="shelf-tab add" id="addGroupBtn">＋书单</button>
     </div>`;
   if (filtered.length) {
+    html += `<div class="shelf-grid">`;
     html += filtered.map(b => {
       const curCh = bookCurrentChapterTitle(b);
-      return `<div class="book-card card" data-bid="${esc(b.id)}">
-        <div class="cover" style="background:${esc(b.coverColor || '#6f5d48')};">${esc((b.title || '书')[0])}</div>
-        <div class="info"><div class="t">${esc(b.title)}</div>
-        <div class="m">${esc(b.author || '')}${curCh ? ' · 读到《' + esc(curCh) + '》' : ''}</div></div>
-        <button class="more" data-bid="${esc(b.id)}">⋯</button>
+      return `<div class="book-tape" data-bid="${esc(b.id)}">
+        ${bookCoverHtml(b)}
+        <button class="more" data-bid="${esc(b.id)}" aria-label="更多">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke="currentColor" stroke-linecap="round"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg>
+        </button>
+        <div class="book-foot"><div class="t">${esc(b.title)}</div>
+        <div class="m">${curCh ? esc(curCh) : (b.author || '未开始')}</div></div>
       </div>`;
     }).join('');
-    html += `<button class="add-book-btn" id="addBookBtn">＋ 导入书籍</button>`;
+    html += `</div>`;
   } else {
-    html += `<div class="empty">${cur === 'all' ? '书库还空着' : '这个书单还没有书'}</div>
-      <button class="add-book-btn" id="addBookBtn">＋ 导入书籍</button>`;
+    html += `<div class="empty">${cur === 'all' ? '书架还空着' : '这个书单还没有书'}<br>点右上角 ＋ 导入</div>`;
   }
   $id('libBody').innerHTML = html;
   /* 事件只绑定一次，避免多次渲染造成重复弹窗 */
@@ -629,19 +671,31 @@ async function renderLib(groupId) {
     $id('libBody').addEventListener('click', (e) => {
       const moreBtn = e.target.closest('.more');
       if (moreBtn) { e.stopPropagation(); openBookMenu(moreBtn.dataset.bid); return; }
-      const card = e.target.closest('.book-card');
+      const card = e.target.closest('.book-tape');
       if (card) openReader(card.dataset.bid);
     });
     $id('libBody')._libBound = true;
   }
-  const ab = $id('addBookBtn');
-  if (ab) ab.addEventListener('click', openImportSheet);
-  const agb = $id('addGroupBtn');
-  if (agb) agb.addEventListener('click', openGroupEditor);
+  const ab = $id('libAddBtn');
+  if (ab) ab.addEventListener('click', openLibAddMenu);
   $qa('#libBody .shelf-tab[data-g]').forEach(t => t.addEventListener('click', () => renderLib(t.dataset.g)));
 }
 function setTabActive(tab) {
   $qa('.tabbar button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+}
+/* 书架右上角 ➕ 二级菜单：导入书籍 / 创建书单 */
+function openLibAddMenu() {
+  openSheet({
+    title: '添加到书架',
+    html: `<div class="menu-pop" style="display:flex;flex-direction:column;gap:4px;">
+      <button id="lmImport">导入书籍</button>
+      <button id="lmGroup">创建书单</button>
+    </div>`,
+    onOpen: (root) => {
+      root.querySelector('#lmImport').addEventListener('click', () => { closeTopSheet(); openImportSheet(); });
+      root.querySelector('#lmGroup').addEventListener('click', () => { closeTopSheet(); openGroupEditor(); });
+    },
+  });
 }/* ───────── 打开阅读器 ───────── */
 async function openReader(bookId, chapterIdTo, paraTo) {
   try {
@@ -2267,50 +2321,47 @@ async function renderMind(filter) {
   if (pl) pl.classList.remove('active');
   await loadAll();
 
-  /* 思想页只保留「我与书的互动」三类：理解 / 问题 / 共鸣；
-     概念属于书本层（在书籍详情/章节精炼处看），实践与改变属于生活层（生活 tab）。 */
-  const typeTabs = [['all', '全部'], ['我的理解', '理解'], ['问题', '问题'], ['共鸣', '共鸣']];
-  let html = `<div class="h-row"><div><div class="h-page">思想</div>
-    <div class="h-sub">我与书的互动 · 理解 / 问题 / 共鸣</div></div></div>
-    <div class="mind-tabs">${typeTabs.map(t => `<button data-f="${t[0]}" class="${S.mindFilter === t[0] ? 'active' : ''}">${t[1]}</button>`).join('')}</div>`;
+  /* 思想页：默认是「两本手账本」，点开后再展开对应内容。
+     概念属于书本层（书籍详情/章节精炼处看），实践与改变属于生活层（生活 tab）。 */
+  const roots = S.insights.filter(i => i.rootId == null && displayType(i.type) === '我的理解').sort((a, b) => b.growthAt - a.growthAt);
+  const questions = S.questions.slice().sort((a, b) => b.createdAt - a.createdAt);
+  const resonates = S.annotations.filter(a => a.type === 'resonate').sort((a, b) => b.createdAt - a.createdAt);
 
   if (S.mindFilter === 'all') {
-    /* 4.0 思想页信息优先级：悬而未决的问题（含正携带的）置顶——这是空间的主角；
-       理解按生命线陈列（一条理解 + 它的再想/修正）；时间线降级为次级视图；共鸣单列。 */
-    const roots = S.insights.filter(i => i.rootId == null && displayType(i.type) === '我的理解').sort((a, b) => b.growthAt - a.growthAt);
-    const questions = S.questions.slice().sort((a, b) => b.createdAt - a.createdAt);
-    const resonates = S.annotations.filter(a => a.type === 'resonate').sort((a, b) => b.createdAt - a.createdAt);
-    const carrying = questions.filter(q => q.carrying);
-    const open = questions.filter(q => !q.carrying);
-    /* 主角：问题（携带的在前） */
-    if (questions.length) {
-      html += '<div class="section-label">悬 而 未 决 <span style="font-weight:400;color:var(--ink-3);">· 带着它们读，让书回答它们</span></div>';
-      if (carrying.length) html += renderQuestionList(carrying);
-      html += renderQuestionList(open.slice(0, 4));
-      if (open.length > 4) html += `<button class="more-link" data-f="问题">看全部 ${questions.length} 条 →</button>`;
-    }
-    /* 次主角：理解（生命线） */
-    if (roots.length) {
-      html += '<div class="section-label">理 解 <span style="font-weight:400;color:var(--ink-3);">· 我的思想节点</span></div>';
-      html += renderInsightList(roots.slice(0, 5));
-      if (roots.length > 5) html += `<button class="more-link" data-f="我的理解">看全部 ${roots.length} 条 →</button>`;
-    }
-    /* 共鸣单列（安静的收藏夹） */
-    if (resonates.length) {
-      html += '<div class="section-label">共 鸣 <span style="font-weight:400;color:var(--ink-3);">· 被击中瞬间的收藏</span></div>';
-      html += renderResonateList(resonates.slice(0, 3));
-      if (resonates.length > 3) html += `<button class="more-link" data-f="共鸣">看全部 ${resonates.length} 条 →</button>`;
-    }
-    if (!questions.length && !roots.length && !resonates.length) html += '<div class="empty">读着读着，会有的</div>';
-  } else if (S.mindFilter === '共鸣') {
-    const resonates = S.annotations.filter(a => a.type === 'resonate').sort((a, b) => b.createdAt - a.createdAt);
+    /* 两本手账本 */
+    let html = `<div class="h-row"><div><div class="h-page">思想</div>
+      <div class="h-sub">两本手账 · 翻开它</div></div></div>`;
+    html += `<div class="journal-grid">
+      <div class="journal" data-open="我的理解">
+        <span class="ring"></span>
+        <div class="j-label">理 解</div>
+        <div class="j-count">${roots.length}</div>
+        <div class="j-note">我自己的思想节点</div>
+      </div>
+      <div class="journal" data-open="问题">
+        <span class="ring"></span>
+        <div class="j-label">问 题</div>
+        <div class="j-count">${questions.length}</div>
+        <div class="j-note">悬而未决，带着读</div>
+      </div>
+    </div>`;
+    if (!roots.length && !questions.length) html += '<div class="empty">读着读着，会有的</div>';
+    $id('mindBody').innerHTML = html;
+    $qa('#mindBody .journal').forEach(el => el.addEventListener('click', () => renderMind(el.dataset.open)));
+    return;
+  }
+
+  const typeTabs = [['我的理解', '理解'], ['问题', '问题'], ['共鸣', '共鸣']];
+  let html = `<div class="h-row"><div><div class="h-page">${esc(S.mindFilter === '我的理解' ? '理解' : S.mindFilter)}</div>
+    <div class="h-sub"><button class="back-inline" data-back="all">‹ 两本手账</button></div></div>`;
+  html += `<div class="mind-tabs">${typeTabs.map(t => `<button data-f="${t[0]}" class="${S.mindFilter === t[0] ? 'active' : ''}">${t[1]}</button>`).join('')}</div>`;
+
+  if (S.mindFilter === '共鸣') {
     html += resonates.length ? renderResonateList(resonates) : '<div class="empty">读到时收藏的共鸣会在这里</div>';
   } else if (S.mindFilter === '问题') {
-    html += S.questions.length ? renderQuestionList(S.questions) : '<div class="empty">还没有悬题</div>';
+    html += questions.length ? renderQuestionList(questions) : '<div class="empty">还没有悬题</div>';
   } else {
-    const roots = S.insights.filter(i => i.rootId == null).sort((a, b) => b.growthAt - a.growthAt);
-    const filtered = roots.filter(i => displayType(i.type) === S.mindFilter);
-    html += filtered.length ? renderInsightList(filtered) : `<div class="empty">还没有「${esc(S.mindFilter)}」类型的沉淀</div>`;
+    html += roots.length ? renderInsightList(roots) : '<div class="empty">还没有理解</div>';
   }
   $id('mindBody').innerHTML = html;
   bindMindEvents();
@@ -2334,7 +2385,7 @@ async function renderLife() {
   const changes = (S.changes || []).slice().sort((a, b) => b.createdAt - a.createdAt);
   /* 4.1 实践节奏：标出超过一周没更新的「进行中」实践，提醒回顾 */
   const stalePractices = practices.filter(p => p.status === '进行中' && p.updatedAt && Date.now() - p.updatedAt > 7 * 86400000);
-  let html = `<div class="h-row"><div><div class="h-page">生活 · 长河</div>
+  let html = `<div class="h-row"><div><div class="h-page">生活</div>
     <div class="h-sub">书进入生活 · 实践 / 长期改变</div></div>
     <button class="h-btn" id="lifeAddPractice">＋实践</button></div>`;
 
@@ -2532,6 +2583,7 @@ function renderTimelineList() {
 }
 function bindMindEvents() {
   $qa('#mindBody .mind-tabs button').forEach(b => b.addEventListener('click', () => renderMind(b.dataset.f)));
+  $qa('#mindBody .back-inline').forEach(b => b.addEventListener('click', () => renderMind('all')));
   $qa('#mindBody .thought-item').forEach(el => el.addEventListener('click', (e) => {
     if (e.target.closest('.mini-tag')) return;
     openInsightDetail(el.dataset.iid);
@@ -2923,11 +2975,13 @@ function openBookMenu(bookId) {
     html: `<button class="row-btn" id="bmRead">继续阅读</button>
       <button class="row-btn" id="bmDetail">书籍详情</button>
       <button class="row-btn" id="bmAddGroup">加入书单</button>
+      <button class="row-btn" id="bmCover">${b.coverImg ? '更换封面' : '上传封面'}</button>
       <button class="row-btn danger" id="bmDelete">删除这本书</button>`,
     onOpen: (root) => {
       root.querySelector('#bmRead').addEventListener('click', () => { closeTopSheet(); openReader(bookId); });
       root.querySelector('#bmDetail').addEventListener('click', () => { closeTopSheet(); openBookDetail(bookId); });
       root.querySelector('#bmAddGroup').addEventListener('click', () => { closeTopSheet(); openAddToGroup(bookId); });
+      root.querySelector('#bmCover').addEventListener('click', () => { closeTopSheet(); openCoverUpload(bookId); });
       root.querySelector('#bmDelete').addEventListener('click', async () => {
         closeTopSheet();
         const ok = await uiConfirm('删除这本书', '删除后，这本书的原文、章节、概念会从书库移除，只删「书的世界」。你在这本书里留下的理解、问题、共鸣、实践、改变都会保留，只是失去出处。确定删除吗？', '删除');
@@ -2940,6 +2994,47 @@ function openBookMenu(bookId) {
     },
   });
 }
+/* 上传 / 更换书封：读取图片文件转 dataURL 存到 book.coverImg */
+function openCoverUpload(bookId) {
+  const b = S.books.find(x => x.id === bookId);
+  if (!b) return;
+  let fileInput = null;
+  const setStatus = (msg, ok) => { const s = document.getElementById('covStatus'); if (s) s.innerHTML = msg; };
+  openSheet({
+    title: '上传封面',
+    html: `
+      <div class="field"><label>选择一张图片作为封面</label>
+      <input type="file" id="covFile" accept="image/*"></div>
+      <div class="import-status" id="covStatus">支持常见图片格式，会自动裁剪铺满封面</div>
+      <div class="btn-row"><button class="btn-c" id="covCancel">取消</button><button class="btn-p" id="covSave">保存封面</button></div>`,
+    onOpen: (root) => {
+      fileInput = root.querySelector('#covFile');
+      root.querySelector('#covCancel').addEventListener('click', closeTopSheet);
+      root.querySelector('#covSave').addEventListener('click', async () => {
+        const f = fileInput && fileInput.files[0];
+        if (!f) { toast('先选一张图'); return; }
+        if (f.size > 1024 * 1024) { toast('图片太大，不超过 1MB'); return; }
+        try {
+          const dataUrl = await new Promise((res, rej) => {
+            const r = new FileReader();
+            r.onload = () => res(String(r.result));
+            r.onerror = () => rej(new Error('读取失败'));
+            r.readAsDataURL(f);
+          });
+          b.coverImg = dataUrl;
+          await upsert('books', b);
+          S.books = await listData('books');
+          closeTopSheet();
+          toast('封面已保存');
+          renderLib();
+        } catch (e) {
+          toast('封面保存失败：' + (e.message || e));
+        }
+      });
+    },
+  });
+}
+
 async function deleteBook(bookId) {
   await removeById('books', bookId);
   const chaps = await listCol('chapters', true);
