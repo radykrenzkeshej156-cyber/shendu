@@ -84,12 +84,12 @@ function timeAgo(ts) {
 
 /* ───────── 类型体系 ───────── */
 const TYPE_META = {
-  '概念':     { label: '概念',   sub: '书本中的思想',  em: '◇' },
+  '概念':     { label: '概念',   sub: '书本中的思想',  em: '·' },
   '我的理解': { label: '理解',   sub: '你自己的理解',  em: '·' },
   '问题':     { label: '问题',   sub: '悬而未决',      em: '？' },
-  '共鸣':     { label: '共鸣',   sub: '收藏的片段',    em: '♥' },
+  '共鸣':     { label: '共鸣',   sub: '收藏的片段',    em: '·' },
   '实践':     { label: '实践',   sub: '书进入生活',    em: '→' },
-  '改变':     { label: '改变',   sub: '长期变化',      em: '◆' },
+  '改变':     { label: '改变',   sub: '长期变化',      em: '·' },
 };
 const TYPE_ORDER = ['概念', '我的理解', '问题', '共鸣', '实践', '改变'];
 /* 3.1：AI 只被动建议「理解 / 问题」；共鸣/实践/改变必须用户主动 */
@@ -580,7 +580,7 @@ let html = `<div class="h-row"><div><div class="h-page">此刻</div>
         <div class="trow"><span class="tt">→ 实践 · ${esc(p.status || '进行中')}</span><span class="ts">${timeAgo(p.updatedAt || p.createdAt)}</span></div>
         ${p.belief ? `<div class="bd" style="font-size:13px;color:var(--ink-2);">信念：${esc(p.belief)}</div>` : ''}
         ${p.action ? `<div class="bd">行动：${esc(p.action)}</div>` : ''}
-        ${book ? `<div class="origin">📖 ${esc(book.title)}</div>` : ''}
+        ${book ? `<div class="origin">· ${esc(book.title)}</div>` : ''}
       </div>`;
     }).join('');
   }
@@ -590,18 +590,18 @@ let html = `<div class="h-row"><div><div class="h-page">此刻</div>
     html += '<div class="section-label">最 近 长 出 的 <span style="font-weight:400;color:var(--ink-3);">· 我在生长</span></div>';
     html += growPicks.slice(0, 2).map(g => {
       if (g.kind === '改变') {
-        return `<div class="pulse-strip"><div class="tt">◆ 改变 · 已确认</div>
+        return `<div class="pulse-strip"><div class="tt">· 改变 · 已确认</div>
           <div class="bd">${esc(String(g.rec.text || '').slice(0, 60))}</div>
           <div class="mt">${timeAgo(g.rec.createdAt)}</div></div>`;
       }
       if (g.kind === '理解') {
         const book = S.books.find(b => b.id === g.rec.bookId);
-        return `<div class="pulse-strip" style="background:var(--accent-soft);border-color:#e2d9cb;"><div class="tt">· 理解</div>
+        return `<div class="pulse-strip" style="background:var(--accent-soft);border-color:var(--line-soft);"><div class="tt">· 理解</div>
           <div class="bd">${esc(String(g.rec.text || '').slice(0, 60))}</div>
           <div class="mt">${book ? esc(book.title) + ' · ' : ''}${timeAgo(g.rec.growthAt || g.rec.createdAt)}</div></div>`;
       }
       const book = S.books.find(b => b.id === g.rec.bookId);
-      return `<div class="pulse-strip" style="background:#f9eff2;border-color:#eed4dc;"><div class="tt">♥ 共鸣</div>
+      return `<div class="pulse-strip" style="background:var(--accent-soft);border-color:var(--line-soft);"><div class="tt">· 共鸣</div>
         <div class="bd">「${esc(String(g.rec.selectedText || '').slice(0, 50))}」</div>
         <div class="mt">${book ? esc(book.title) + ' · ' : ''}${timeAgo(g.rec.createdAt)}</div></div>`;
     }).join('');
@@ -683,7 +683,7 @@ async function renderLib(groupId) {
 function setTabActive(tab) {
   $qa('.tabbar button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
 }
-/* 书架右上角 ➕ 二级菜单：导入书籍 / 创建书单 */
+/* 书架右上角 ＋ 二级菜单：导入书籍 / 创建书单 */
 function openLibAddMenu() {
   openSheet({
     title: '添加到书架',
@@ -1751,7 +1751,7 @@ function showSaveProposal(type, content, s) {
   div.innerHTML = `<div style="font-size:12.5px;line-height:1.7;">${esc(content)}</div>
     <div class="sugg-actions" style="display:flex;gap:6px;margin-top:8px;">
       <button class="s-save" style="padding:6px 14px;border-radius:100px;background:var(--accent);color:#fff;border:none;font-size:12px;">记下来</button>
-      <button class="s-ignore" style="padding:6px 14px;border-radius:100px;background:#eeeae3;color:var(--ink-2);border:none;font-size:12px;">不用</button>
+      <button class="s-ignore" style="padding:6px 14px;border-radius:100px;background:var(--surface-2);color:var(--ink-2);border:none;font-size:12px;">不用</button>
     </div>`;
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;
@@ -2083,7 +2083,7 @@ async function renderCarryBar() {
   bar.hidden = false;
   $id('reader').classList.add('has-carry');
   bar.innerHTML = '<span class="carry-label">带着</span>' + carried.slice(0, 3).map(q =>
-    `<button class="carry-item" data-qid="${esc(q.id)}">✈ ${esc(String(q.text).slice(0, 16))}${q.text.length > 16 ? '…' : ''}</button>`
+    `<button class="carry-item" data-qid="${esc(q.id)}">⌁ ${esc(String(q.text).slice(0, 16))}${q.text.length > 16 ? '…' : ''}</button>`
   ).join('') + (carried.length > 3 ? '<button class="carry-item" id="carryMore">+更多</button>' : '');
   bar.querySelectorAll('.carry-item[data-qid]').forEach(b => b.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -2103,7 +2103,7 @@ function openCarryList() {
     title: '正带着的问题',
     html: carried.length ? carried.map(q => {
       const book = S.books.find(b => b.id === q.bookId);
-      return `<div class="row-btn" data-qid="${esc(q.id)}"><span style="color:var(--gold);font-size:10px;">✈ 带着</span> ${esc(q.text)}<div style="font-size:11px;color:var(--ink-3);margin-top:3px;">${book ? esc(book.title) : '无出处'} · 悬着</div></div>`;
+      return `<div class="row-btn" data-qid="${esc(q.id)}"><span style="color:var(--gold);font-size:10px;">⌁ 带着</span> ${esc(q.text)}<div style="font-size:11px;color:var(--ink-3);margin-top:3px;">${book ? esc(book.title) : '无出处'} · 悬着</div></div>`;
     }).join('') : '<div class="empty">现在没有带着的问题<br>去「思想 → 问题」把想继续想下去的设为带着读</div>',
     onOpen: (root) => {
       root.querySelectorAll('.row-btn[data-qid]').forEach(b => b.addEventListener('click', () => { closeTopSheet(); openQuestionDetail(b.dataset.qid); }));
@@ -2390,8 +2390,8 @@ async function renderLife() {
     <button class="h-btn" id="lifeAddPractice">＋实践</button></div>`;
 
   if (stalePractices.length) {
-    html += `<div class="pulse-strip" style="background:#f5f0e8;border-color:#e0d7c8;margin-bottom:10px;">
-      <div class="tt">⏰ 需要回顾</div>
+    html += `<div class="pulse-strip" style="background:var(--accent-soft);border-color:var(--line-soft);margin-bottom:10px;">
+      <div class="tt">· 需要回顾</div>
       <div class="bd" style="font-size:13px;">你有 ${stalePractices.length} 条实践超过一周没有更新了<br>点开看看，更新状态或放下它</div>
     </div>`;
   }
@@ -2399,7 +2399,7 @@ async function renderLife() {
   html += practices.length ? renderPracticeList(practices) : '<div class="empty">实践是你主动把阅读带进生活的记录<br>AI 不替你制定方案，从「＋实践」开始吧</div>';
 
   html += '<div class="section-label">改 变 <span style="font-weight:400;">· 长期观察结果（周期分析提出，你确认后保存）</span></div>';
-  html += '<div style="margin:8px 0 6px;"><button class="change-btn" id="lifeRunChange">✧ 手动运行「改变」周期分析</button></div>';
+  html += '<div style="margin:8px 0 6px;"><button class="change-btn" id="lifeRunChange">· 手动运行「改变」周期分析</button></div>';
   html += changes.length ? renderChangeList(changes) : '<div class="empty">长期积累后，由周期分析提出可能发生的改变</div>';
 
   pl.querySelector('#lifeBody').innerHTML = html;
@@ -2496,9 +2496,9 @@ function renderConceptList(list) {
   return list.map(c => {
     const book = S.books.find(b => b.id === c.bookId);
     return `<div class="thought-item card" data-cid="${esc(c.id)}">
-      <div class="trow"><span class="tt">◇ 概念</span><span class="ts">${timeAgo(c.createdAt)}</span></div>
+      <div class="trow"><span class="tt">· 概念</span><span class="ts">${timeAgo(c.createdAt)}</span></div>
       <div class="bd"><b>${esc(c.term)}</b>${c.def ? ' — ' + esc(c.def) : ''}</div>
-      <div class="origin">${book ? '📖 ' + esc(book.title) : ''}${c.chapterId ? ' · ' + esc(escapedChapterTitle(book, c.chapterId)) : ''}</div>
+      <div class="origin">${book ? '· ' + esc(book.title) : ''}${c.chapterId ? ' · ' + esc(escapedChapterTitle(book, c.chapterId)) : ''}</div>
     </div>`;
   }).join('');
 }
@@ -2510,7 +2510,7 @@ function renderPracticeList(list) {
       <div class="trow"><span class="tt">→ 实践 · ${esc(p.status || '进行中')}</span><span class="ts">${timeAgo(p.createdAt)}</span></div>
       ${p.belief ? `<div class="bd" style="font-size:13px;color:var(--ink-2);">信念：${esc(p.belief)}</div>` : ''}
       ${p.action ? `<div class="bd">行动：${esc(p.action)}</div>` : ''}
-      <div class="origin">${book ? '📖 ' + esc(book.title) : ''}</div>
+      <div class="origin">${book ? '· ' + esc(book.title) : ''}</div>
     </div>`;
   }).join('');
 }
@@ -2518,7 +2518,7 @@ function renderPracticeList(list) {
 function renderChangeList(list) {
   return list.map(c => {
     return `<div class="thought-item card" data-cid2="${esc(c.id)}">
-      <div class="trow"><span class="tt">◆ 改变${c.confirmed ? '' : ' · 待确认'}</span><span class="ts">${timeAgo(c.createdAt)}</span></div>
+      <div class="trow"><span class="tt">· 改变${c.confirmed ? '' : ' · 待确认'}</span><span class="ts">${timeAgo(c.createdAt)}</span></div>
       <div class="bd">${esc(c.text)}</div>
       <div class="origin">${esc(c.source || '')}${c.confirmed ? ' · 已确认' : ''}</div>
       ${!c.confirmed ? `<div class="btn-row" style="margin-top:8px;"><button class="btn-p" data-confirm-c="${esc(c.id)}">确认这条改变</button></div>` : ''}
@@ -2536,7 +2536,7 @@ function renderInsightList(list) {
       <div class="bd">${esc(i.text)}</div>
       ${growth.length ? '<div class="growth">' + growth.slice(-2).map(g => `<div class="g-row">· ${esc(String(g.text).slice(0, 50))}</div>`).join('') + `<div style="font-size:10.5px;color:var(--ink-3);margin-top:3px;">共 ${growth.length} 次再想</div></div>` : ''}
       ${tagChips ? `<div class="tag-row">${tagChips}</div>` : ''}
-      <div class="origin">${book ? '📖 ' + esc(book.title) : ''}${i.quote ? ' · 「' + esc(i.quote.slice(0, 14)) + '…」' : ''}</div>
+      <div class="origin">${book ? '· ' + esc(book.title) : ''}${i.quote ? ' · 「' + esc(i.quote.slice(0, 14)) + '…」' : ''}</div>
     </div>`;
   }).join('');
 }
@@ -2547,7 +2547,7 @@ function renderQuestionList(list) {
     const answers = Array.isArray(q.answers) && q.answers.length ? q.answers : (q.answerText ? [{ text: q.answerText, at: q.answeredAt || q.createdAt }] : []);
     return `<div class="q-item card${q.carrying ? ' carrying' : ''}" data-qid="${esc(q.id)}">
       <div class="bd">${esc(q.text)}</div>
-      ${q.carrying ? '<div class="carry-tag">✈ 带着它读</div>' : ''}
+      ${q.carrying ? '<div class="carry-tag">⌁ 带着它读</div>' : ''}
       ${tagChips ? `<div class="tag-row">${tagChips}</div>` : ''}
       ${answers.length ? `<div class="ans">已回应 ${answers.length} 次 · ${esc(String(answers[answers.length - 1].text).slice(0, 60))}</div>` : '<div class="mt" style="margin-top:7px;">还悬着</div>'}
       <div class="mt">${book ? esc(book.title) : '无出处'} · ${timeAgo(q.createdAt)}</div>
@@ -2558,9 +2558,9 @@ function renderResonateList(list) {
   return list.map(a => {
     const book = S.books.find(b => b.id === a.bookId);
     return `<div class="resonate-item card" data-annid="${esc(a.id)}">
-      <div class="trow"><span class="tt">♥ 共鸣</span><span class="ts">${timeAgo(a.createdAt)}</span></div>
+      <div class="trow"><span class="tt">· 共鸣</span><span class="ts">${timeAgo(a.createdAt)}</span></div>
       <div class="bd">「${esc(String(a.selectedText || '').slice(0, 90))}${String(a.selectedText || '').length > 90 ? '…' : ''}」</div>
-      <div class="origin">${book ? '📖 ' + esc(book.title) : ''}</div>
+      <div class="origin">${book ? '· ' + esc(book.title) : ''}</div>
     </div>`;
   }).join('');
 }
@@ -2637,7 +2637,7 @@ async function openInsightDetail(id) {
           <div style="font-size:10.5px;color:var(--ink-3);margin-top:3px;">${timeAgo(g.createdAt)}${g.bookId !== root.bookId ? ' · 另一次阅读' : ''}</div>
         </div>`).join('') : ''}
       <div class="section-label">来自</div>
-      <div style="font-size:13px;color:var(--ink-2);line-height:1.7;">${book ? '📖 ' + esc(book.title) + (chTitle ? ' · ' + esc(chTitle) : '') : '（无出处）'}
+      <div style="font-size:13px;color:var(--ink-2);line-height:1.7;">${book ? '· ' + esc(book.title) + (chTitle ? ' · ' + esc(chTitle) : '') : '（无出处）'}
       ${root.quote ? '<br>「' + esc(String(root.quote).slice(0, 80)) + '…」' : ''}</div>
       ${book && root.chapterId ? `<div class="btn-row"><button class="btn-p" id="jumpOrigin">回到那里继续读</button></div>` : ''}
       <div class="btn-row"><button class="btn-c" id="practiceI">由此记录实践</button></div>
@@ -2675,14 +2675,14 @@ async function openQuestionDetail(id) {
   const tagChips = (q.tags || []).map(t => `<span class="mini-tag" data-t="${esc(t)}">${esc(t)}</span>`).join(' ');
   const answers = Array.isArray(q.answers) && q.answers.length ? q.answers : (q.answerText ? [{ text: q.answerText, at: q.answeredAt || q.createdAt }] : []);
   const carryBtn = q.carrying
-    ? `<button class="row-btn" id="uncarryQ">✈ 不再带着它读</button>`
-    : `<button class="row-btn" id="carryQ">✈ 带着它继续读</button>`;
+    ? `<button class="row-btn" id="uncarryQ">⌁ 不再带着它读</button>`
+    : `<button class="row-btn" id="carryQ">⌁ 带着它继续读</button>`;
   openSheet({
     title: '问题',
     html: `
       <div style="font-size:14.5px;line-height:1.8;margin-bottom:10px;">${esc(q.text)}</div>
       ${tagChips ? `<div class="tag-row" style="margin-bottom:10px;">${tagChips}</div>` : ''}
-      ${q.carrying ? '<div class="carry-tag" style="margin-bottom:10px;">✈ 正带着它读</div>' : ''}
+      ${q.carrying ? '<div class="carry-tag" style="margin-bottom:10px;">⌁ 正带着它读</div>' : ''}
       <div class="section-label">这条问题的回应（${answers.length}）</div>
       ${answers.length ? answers.slice().reverse().map(a => {
         const aBook = a.bookId ? S.books.find(b => b.id === a.bookId) : null;
@@ -2694,7 +2694,7 @@ async function openQuestionDetail(id) {
         </div>`;
       }).join('') : '<div class="empty" style="padding:14px;">还没有回应，悬着</div>'}
       <div class="section-label">来自</div>
-      <div style="font-size:13px;color:var(--ink-2);line-height:1.7;margin-bottom:8px;">${book ? '📖 ' + esc(book.title) + (chTitle ? ' · ' + esc(chTitle) : '') : '（无出处）'}
+      <div style="font-size:13px;color:var(--ink-2);line-height:1.7;margin-bottom:8px;">${book ? '· ' + esc(book.title) + (chTitle ? ' · ' + esc(chTitle) : '') : '（无出处）'}
       ${q.quote ? '<br>「' + esc(String(q.quote).slice(0, 80)) + '…」' : ''}</div>
       ${book && q.chapterId ? `<div class="btn-row"><button class="btn-c" id="jumpOrigin">回到那里再读</button></div>` : ''}
       <div class="btn-row"><button class="btn-p" id="answerQ">留下新回应</button></div>
@@ -2742,7 +2742,7 @@ async function openResonateDetail(id) {
     html: `
       <div style="font-size:15px;font-family:var(--font-serif);line-height:2;margin-bottom:12px;">「${esc(a.selectedText)}」</div>
       <div class="section-label">来自</div>
-      <div style="font-size:13px;color:var(--ink-2);line-height:1.7;">${book ? '📖 ' + esc(book.title) + (chTitle ? ' · ' + esc(chTitle) : '') : ''}</div>
+      <div style="font-size:13px;color:var(--ink-2);line-height:1.7;">${book ? '· ' + esc(book.title) + (chTitle ? ' · ' + esc(chTitle) : '') : ''}</div>
       ${book && a.chapterId ? `<div class="btn-row"><button class="btn-p" id="jumpOrigin">回到原文</button></div>` : ''}
       <div class="btn-row"><button class="btn-c" id="delAnn" style="color:var(--danger);">取消收藏</button></div>`,
     onOpen: (rootEl) => {
@@ -2774,7 +2774,7 @@ async function openConceptDetail(id) {
       <div style="font-size:15px;line-height:1.7;margin-bottom:8px;"><b>${esc(c.term)}</b></div>
       <div style="font-size:14px;color:var(--ink-2);line-height:1.7;">${esc(c.def)}</div>
       <div class="section-label">来自</div>
-      <div style="font-size:13px;color:var(--ink-2);line-height:1.7;">${book ? '📖 ' + esc(book.title) : ''}${c.chapterId ? ' · ' + esc(escapedChapterTitle(book, c.chapterId)) : ''}</div>
+      <div style="font-size:13px;color:var(--ink-2);line-height:1.7;">${book ? '· ' + esc(book.title) : ''}${c.chapterId ? ' · ' + esc(escapedChapterTitle(book, c.chapterId)) : ''}</div>
       <div class="btn-row"><button class="btn-p" id="editConcept">修改</button></div>
       <div class="btn-row"><button class="btn-c" id="delConcept" style="color:var(--danger);">删除</button></div>`,
     onOpen: (rootEl) => {
@@ -2827,7 +2827,7 @@ async function openPracticeDetail(id) {
       ${p.action ? `<div style="font-size:13px;color:var(--ink-2);margin-bottom:4px;">行动</div><div style="font-size:14px;line-height:1.7;margin-bottom:10px;">${esc(p.action)}</div>` : ''}
       <div class="section-label">状态</div>
       <div style="font-size:13px;color:var(--ink-2);margin-bottom:8px;">${esc(p.status || '进行中')}</div>
-      ${book ? `<div class="section-label">来自</div><div style="font-size:13px;color:var(--ink-2);line-height:1.7;">📖 ${esc(book.title)}</div>` : ''}
+      ${book ? `<div class="section-label">来自</div><div style="font-size:13px;color:var(--ink-2);line-height:1.7;">· ${esc(book.title)}</div>` : ''}
       <div class="btn-row"><button class="btn-p" id="editP">更新</button></div>
       <div class="btn-row"><button class="btn-c" id="delP" style="color:var(--danger);">删除</button></div>`,
     onOpen: (rootEl) => {
@@ -2936,7 +2936,7 @@ async function openBookDetail(bookId) {
 
       <div class="section-label" style="margin-top:20px;">这本书本身</div>
       ${concepts.length
-        ? concepts.slice(0, 5).map(i => `<div class="mini-line" data-ciid="${esc(i.id)}"><span style="color:var(--gold);font-size:10px;">◇</span>${esc(i.term + (i.def ? '：' + i.def.slice(0, 30) : ''))}</div>`).join('')
+        ? concepts.slice(0, 5).map(i => `<div class="mini-line" data-ciid="${esc(i.id)}"><span style="color:var(--gold);font-size:10px;">·</span>${esc(i.term + (i.def ? '：' + i.def.slice(0, 30) : ''))}</div>`).join('')
         : '<div class="empty" style="padding:14px;">读完一些章节后，书里的概念会被整理在这里</div>'}
 
       <div class="section-label" style="margin-top:18px;">我在这里留下的</div>
@@ -3083,7 +3083,7 @@ function openGroupEditor() {
         <span style="flex:1;font-size:14px;">${esc(g.name)}（${(g.bookIds || []).length} 本）</span>
         <button class="btn-c" data-editg="${esc(g.id)}" style="padding:6px 12px;border:none;border-radius:9px;font-size:12px;">管理</button>
       </div>`).join('') : '<div class="empty">还没有书单</div>' + `
-      <div style="display:flex;gap:8px;margin-top:12px;"><input id="newGName" placeholder="新书单名称" style="flex:1;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#f9f6f1;font-size:14px;outline:none;"><button class="btn-p" id="addG" style="border:none;border-radius:10px;padding:0 16px;">添加</button></div>`,
+      <div style="display:flex;gap:8px;margin-top:12px;"><input id="newGName" placeholder="新书单名称" style="flex:1;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2);font-size:14px;outline:none;"><button class="btn-p" id="addG" style="border:none;border-radius:10px;padding:0 16px;">添加</button></div>`,
     onOpen: (root) => {
       root.querySelectorAll('[data-editg]').forEach(b => b.addEventListener('click', async () => { closeTopSheet(); openGroupDetail(b.dataset.editg); }));
       root.querySelector('#addG').addEventListener('click', async () => {
@@ -3104,7 +3104,7 @@ function openGroupDetail(groupId) {
     title: `书单 · ${g.name}`,
     html: `
       <div class="field"><label>重命名书单</label>
-        <div style="display:flex;gap:8px;"><input id="gName" value="${esc(g.name)}" style="flex:1;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#f9f6f1;font-size:14px;outline:none;"><button class="btn-p" id="gRename" style="border:none;border-radius:10px;padding:0 16px;flex-shrink:0;">重命名</button></div></div>
+        <div style="display:flex;gap:8px;"><input id="gName" value="${esc(g.name)}" style="flex:1;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2);font-size:14px;outline:none;"><button class="btn-p" id="gRename" style="border:none;border-radius:10px;padding:0 16px;flex-shrink:0;">重命名</button></div></div>
       <div class="section-label">书单里的书（${books.length}）</div>
       ${books.length ? books.map(b => `
         <div style="display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--line-soft);">
@@ -3210,7 +3210,7 @@ function readFileText(file) {
 }
 async function importBook(title, author, format, chapters, coverImg) {
   const bookId = 'book_' + uid();
-  const covers = ['#6f5d48', '#5b6e5a', '#5f6e7a', '#7a6557', '#6d5b74', '#5a7468'];
+  const covers = ['#3a3a3e', '#4c4c50', '#5d5d62', '#6e6e73', '#7f7f84', '#2f2f33'];
   const coverColor = covers[Math.floor(Math.random() * covers.length)];
   const chapterMeta = [];
   let paraStart = 0;
@@ -3473,7 +3473,7 @@ $qa('.tabbar button').forEach(b => b.addEventListener('click', () => switchTab(b
 
 /* ───────── 初始化 ───────── */
 async function init() {
-  if (!A) { $id('deskBody').innerHTML = '<div style="text-align:center;padding:60px;color:#aaa;">请在 AI 小手机内打开</div>'; return; }
+  if (!A) { $id('deskBody').innerHTML = '<div style="text-align:center;padding:60px;color:var(--ink-3);">请在 AI 小手机内打开</div>'; return; }
   buildSelBar();
   /* 旧数据轻迁移 */
   const bookRows = await listCol('books');
