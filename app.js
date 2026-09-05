@@ -45,9 +45,9 @@ const $qa = (sel) => typeof sel === 'string' ? Array.from(document.querySelector
 function esc(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
-function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\function esc(s) {
+function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\function esc(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}'); }
+}'); }'); }
 function uid() { return Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
 let _toastTimer = null;
 function toast(msg, dur = 2200) {
