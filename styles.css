@@ -32,8 +32,8 @@
   --line: rgba(0, 0, 0, .10);
   --line-soft: rgba(0, 0, 0, .06);
 
-  /* 强调色：近黑（无彩色）。on-accent 为强调整上的反色文字 */
-  --accent: #161618;
+  /* 强调色：深灰（无彩色）。on-accent 为强调整上的反色文字 */
+  --accent: #3a3a3e;
   --accent-soft: rgba(0, 0, 0, .055);
   --on-accent: #ffffff;
 
@@ -108,7 +108,7 @@
   --line: rgba(255, 255, 255, .09);
   --line-soft: rgba(255, 255, 255, .05);
 
-  --accent: #ececef;
+  --accent: #c9c9cf;
   --accent-soft: rgba(255, 255, 255, .08);
   --on-accent: #1a1a1c;
 
@@ -314,9 +314,9 @@ input, textarea { font-family: inherit; color: var(--ink); }
 .book-tape .more:active { transform: scale(.9); }
 
 /* 此刻 / 桌面（只显示一本，大封面） */
-.now-row { display: flex; gap: 24px; align-items: flex-start; margin-top: 12px; cursor: pointer; }
+.now-row { display: flex; gap: 24px; align-items: center; justify-content: center; margin-top: 12px; cursor: pointer; }
 .now-row .cover { width: 128px; aspect-ratio: 2 / 3; flex-shrink: 0; }
-.now-meta { flex: 1; min-width: 0; padding-top: 30px; }
+.now-meta { flex: 1; min-width: 0; padding-top: 30px; text-align: center; }
 .now-meta .t { font-size: 17px; font-weight: 450; letter-spacing: .02em; }
 .now-meta .m { font-size: 12px; color: var(--ink-3); margin-top: 8px; line-height: 1.8; }
 .now-meta .go { color: var(--ink-3); font-size: 22px; margin-top: 18px; display: inline-block; transition: transform .2s ease, color .2s ease; }
@@ -355,14 +355,14 @@ input, textarea { font-family: inherit; color: var(--ink); }
 .pulse-strip .mt { font-size: 11px; color: var(--ink-3); margin-top: 10px; text-align: right; }
 
 /* ───────── 10. 手账本（思想页：理解 / 问题 两本册子） ───────── */
-.journal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 8px; }
+.journal-grid { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 8px; }
 .journal {
-  position: relative; border-radius: var(--radius-xl); min-height: 170px; padding: 22px 18px;
+  position: relative; border-radius: var(--radius-xl); min-height: 150px; padding: 26px 24px;
   display: flex; flex-direction: column; justify-content: space-between; overflow: hidden;
   background: var(--surface-2); border: 1px solid var(--line-soft); cursor: pointer;
   transition: transform .25s ease, box-shadow .3s ease;
 }
-.journal:hover { transform: translateY(-1px); box-shadow: var(--shadow-1); }
+.journal:hover { transform: translateY(-1px); }
 .journal:active { transform: scale(.975); }
 .journal .ring { /* 手账本装订环（灰度，无金） */
   position: absolute; left: 0; top: 0; bottom: 0; width: 14px;
@@ -398,6 +398,11 @@ input, textarea { font-family: inherit; color: var(--ink); }
   border-bottom: 1px solid var(--line-soft);
   transition: background .2s ease;
 }
+/* 实践卡片：文字与日期留白、居中，不贴边 */
+.practice-card { padding: 18px 20px; text-align: center; }
+.practice-card .trow { justify-content: center; gap: 12px; }
+.practice-card .bd { text-align: center; }
+.practice-card .origin { text-align: center; }
 .thought-item:active { background: var(--accent-soft); }
 .thought-item .tt { font-size: 10.5px; letter-spacing: .16em; color: var(--ink-2); margin-bottom: 8px; }
 .thought-item .tt.types-q { color: var(--ink-2); }
@@ -680,6 +685,8 @@ input, textarea { font-family: inherit; color: var(--ink); }
 .char-row .av { width: 40px; height: 40px; border-radius: 50%; background: var(--accent-soft); color: var(--ink); display: flex; align-items: center; justify-content: center; font-size: 15px; }
 .import-status { font-size: 12.5px; color: var(--ink-2); margin: 8px 0; display: flex; align-items: center; gap: 7px; }
 .change-btn { display: block; width: 100%; padding: 13px; border-radius: 14px; color: var(--ink); font-size: 13.5px; background: var(--accent-soft); }
+/* 上下文开关：低饱和黑白灰勾子 */
+.low-sat-cb { accent-color: #8a8a90; }
 
 /* 书单管理行 */
 .group-row { display: flex; align-items: center; gap: 8px; padding: 11px 0; border-bottom: 1px solid var(--line-soft); }

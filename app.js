@@ -573,10 +573,10 @@ let html = `<div class="h-row"><div><div class="h-page">此刻</div>
 
   /* 进行中的实践 */
   if (ongoing.length) {
-    html += '<div class="section-label">进 行 中 的 实 践 <span style="font-weight:400;color:var(--ink-3);">· 等你的行动</span></div>';
+    html += '<div class="section-label">进 行 中 的 实 践</div>';
     html += ongoing.map(p => {
       const book = S.books.find(b => b.id === p.bookId);
-      return `<div class="thought-item card" data-pid="${esc(p.id)}">
+      return `<div class="thought-item card practice-card" data-pid="${esc(p.id)}">
         <div class="trow"><span class="tt">→ 实践 · ${esc(p.status || '进行中')}</span><span class="ts">${timeAgo(p.updatedAt || p.createdAt)}</span></div>
         ${p.belief ? `<div class="bd" style="font-size:13px;color:var(--ink-2);">信念：${esc(p.belief)}</div>` : ''}
         ${p.action ? `<div class="bd">行动：${esc(p.action)}</div>` : ''}
@@ -587,7 +587,7 @@ let html = `<div class="h-row"><div><div class="h-page">此刻</div>
 
   /* 最近长出的 */
   if (growPicks.length) {
-    html += '<div class="section-label">最 近 长 出 的 <span style="font-weight:400;color:var(--ink-3);">· 我在生长</span></div>';
+    html += '<div class="section-label">最 近 长 出 的</div>';
     html += growPicks.slice(0, 2).map(g => {
       if (g.kind === '改变') {
         return `<div class="pulse-strip"><div class="tt">· 改变 · 已确认</div>
@@ -1101,9 +1101,6 @@ function buildSelBar() {
     <button data-act="understand">记理解</button>
     <button data-act="resonate">共鸣</button>
     <button data-act="more">⋯</button>`;
-  bar.querySelector('button[data-act="more"]')?.addEventListener('click', () => {
-    openSelMoreSheet(selInfo);
-  });
   bar.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
     const act = b.dataset.act;
     hideSelBar();
@@ -1967,6 +1964,8 @@ function openPracticeSheet(init) {
           bookId: init.bookId || (S.rBook ? S.rBook.id : null),
           linkType: init.linkType, linkId: init.linkId,
         });
+        if (S.tab === 'life') renderLife();
+        else if (S.tab === 'desk') renderDesk();
       });
     },
   });
@@ -2351,10 +2350,8 @@ async function renderMind(filter) {
     return;
   }
 
-  const typeTabs = [['我的理解', '理解'], ['问题', '问题'], ['共鸣', '共鸣']];
   let html = `<div class="h-row"><div><div class="h-page">${esc(S.mindFilter === '我的理解' ? '理解' : S.mindFilter)}</div>
     <div class="h-sub"><button class="back-inline" data-back="all">‹ 两本手账</button></div></div>`;
-  html += `<div class="mind-tabs">${typeTabs.map(t => `<button data-f="${t[0]}" class="${S.mindFilter === t[0] ? 'active' : ''}">${t[1]}</button>`).join('')}</div>`;
 
   if (S.mindFilter === '共鸣') {
     html += resonates.length ? renderResonateList(resonates) : '<div class="empty">读到时收藏的共鸣会在这里</div>';
@@ -2395,12 +2392,12 @@ async function renderLife() {
       <div class="bd" style="font-size:13px;">你有 ${stalePractices.length} 条实践超过一周没有更新了<br>点开看看，更新状态或放下它</div>
     </div>`;
   }
-  html += '<div class="section-label">实 践 <span style="font-weight:400;">· 信念 + 行动（你自己来定）</span></div>';
+  html += '<div class="section-label">实 践 <span style="font-weight:400;">· 信念 + 行动</span></div>';
   html += practices.length ? renderPracticeList(practices) : '<div class="empty">实践是你主动把阅读带进生活的记录<br>AI 不替你制定方案，从「＋实践」开始吧</div>';
 
-  html += '<div class="section-label">改 变 <span style="font-weight:400;">· 长期观察结果（周期分析提出，你确认后保存）</span></div>';
+  html += '<div class="section-label">改 变 <span style="font-weight:400;">· 长期观察结果</span></div>';
   html += '<div style="margin:8px 0 6px;"><button class="change-btn" id="lifeRunChange">· 手动运行「改变」周期分析</button></div>';
-  html += changes.length ? renderChangeList(changes) : '<div class="empty">长期积累后，由周期分析提出可能发生的改变</div>';
+  html += changes.length ? renderChangeList(changes) : '<div class="empty">还没有改变记录</div>';
 
   pl.querySelector('#lifeBody').innerHTML = html;
   const ap = pl.querySelector('#lifeAddPractice');
@@ -2506,7 +2503,7 @@ function renderConceptList(list) {
 function renderPracticeList(list) {
   return list.map(p => {
     const book = S.books.find(b => b.id === p.bookId);
-    return `<div class="thought-item card" data-pid="${esc(p.id)}">
+    return `<div class="thought-item card practice-card" data-pid="${esc(p.id)}">
       <div class="trow"><span class="tt">→ 实践 · ${esc(p.status || '进行中')}</span><span class="ts">${timeAgo(p.createdAt)}</span></div>
       ${p.belief ? `<div class="bd" style="font-size:13px;color:var(--ink-2);">信念：${esc(p.belief)}</div>` : ''}
       ${p.action ? `<div class="bd">行动：${esc(p.action)}</div>` : ''}
@@ -2898,7 +2895,7 @@ async function openMindDrawer() {
     html: list.length ? list.map(i => `
       <button class="row-btn" data-iid="${esc(i.id)}">
         <span style="font-size:10.5px;color:var(--gold);">· 理解</span> ${esc(String(i.text).slice(0, 44))}
-      </button>`).join('') + `<div class="btn-row"><button class="btn-c" id="vmGoMind">去思想空间看理解 / 问题 / 共鸣</button></div>`
+      </button>`).join('') + `<div class="btn-row"><button class="btn-c" id="vmGoMind">去思想空间看理解 / 问题</button></div>`
       : '<div class="empty">这一本还没有留下什么<br>读到想明白的，划一段「理解」吧</div>',
     onOpen: (root) => {
       root.querySelectorAll('.row-btn[data-iid]').forEach(b => b.addEventListener('click', () => {
@@ -2907,7 +2904,7 @@ async function openMindDrawer() {
         openInsightDetail(id);
       }));
       const go = root.querySelector('#vmGoMind');
-      if (go) go.addEventListener('click', () => { closeTopSheet(); switchTab('mind'); });
+      if (go) go.addEventListener('click', () => { closeTopSheet(); closeReader(); switchTab('mind'); });
     },
   });
 }/* ───────── 书籍详情：从这本书长出来的东西 ───────── */
@@ -2955,7 +2952,7 @@ async function openBookDetail(bookId) {
     onOpen: (root) => {
       root.querySelector('#bdContinue').addEventListener('click', () => { closeTopSheet(); openReader(bookId); });
       root.querySelector('#bdClose').addEventListener('click', closeTopSheet);
-      root.querySelector('#bdLife').addEventListener('click', () => { closeTopSheet(); switchTab('life'); });
+      root.querySelector('#bdLife').addEventListener('click', () => { closeTopSheet(); closeReader(); switchTab('life'); });
       root.querySelector('#bdU').addEventListener('click', () => { closeTopSheet(); switchTab('mind'); renderMind('我的理解'); });
       root.querySelector('#bdQ').addEventListener('click', () => { closeTopSheet(); switchTab('mind'); renderMind('问题'); });
       root.querySelector('#bdR').addEventListener('click', () => { closeTopSheet(); switchTab('mind'); renderMind('共鸣'); });
@@ -3330,7 +3327,11 @@ function openCoreadSettings() {
     <div class="field"><label>共读角色浓缩卡</label>
       <textarea id="cardInput" placeholder="${esc(DEFAULT_CARD)}" style="min-height:80px;">${coset.card ? esc(coset.card) : ''}</textarea></div>
     <div class="field"><label>小模型 API 配置 ID（可选）</label>
-      <input type="text" id="smallApiInput" placeholder="留空 = 用默认 API（推荐）" value="${esc(coset.smallApi || '')}"></div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input type="text" id="smallApiInput" placeholder="留空 = 用默认 API（推荐）" value="${esc(coset.smallApi || '')}" style="flex:1;">
+        <button class="btn-c" id="smallApiTest" style="flex-shrink:0;padding:12px 16px;border-radius:13px;font-size:13px;">测试</button>
+      </div>
+      <div id="smallApiTestResult" style="font-size:12px;margin-top:6px;min-height:16px;"></div></div>
     <div class="field" style="font-size:12px;color:var(--ink-3);">精炼/概念提取/召回筛选等杂活走小模型，共读回复仍走大模型角色链路。留空最稳，用默认 API；若填入了无法调用的配置，会自动回退默认 API。</div>`;
 
   const recallHtml = `智能检索 · 数量限制
@@ -3345,12 +3346,12 @@ function openCoreadSettings() {
 
   const memHtml = `上下文开关
     <div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0;">
-      <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" id="ckSummary" ${coset.includeSummary ? 'checked' : ''}> 章节精炼</label>
-      <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" id="ckMsgs" ${coset.includeMsgs !== false ? 'checked' : ''}> 最近对话</label>
-      <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" id="ckCross" ${coset.includeCrossBook !== false ? 'checked' : ''}> 跨书召回</label>
-      <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" id="ckCard" ${coset.includeCard ? 'checked' : ''}> 人设卡</label>
-      <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" id="ckCore" ${coset.includeCore ? 'checked' : ''}> 核心记忆</label>
-      <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" id="ckLong" ${coset.includeMemLong ? 'checked' : ''}> 长期记忆</label>
+      <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" class="low-sat-cb" id="ckSummary" ${coset.includeSummary ? 'checked' : ''}> 章节精炼</label>
+      <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" class="low-sat-cb" id="ckMsgs" ${coset.includeMsgs !== false ? 'checked' : ''}> 最近对话</label>
+      <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" class="low-sat-cb" id="ckCross" ${coset.includeCrossBook !== false ? 'checked' : ''}> 跨书召回</label>
+      <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" class="low-sat-cb" id="ckCard" ${coset.includeCard ? 'checked' : ''}> 人设卡</label>
+      <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" class="low-sat-cb" id="ckCore" ${coset.includeCore ? 'checked' : ''}> 核心记忆</label>
+      <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" class="low-sat-cb" id="ckLong" ${coset.includeMemLong ? 'checked' : ''}> 长期记忆</label>
     </div>`;
 
   const ctxState = `本次共读上下文
@@ -3411,6 +3412,20 @@ function openCoreadSettings() {
         coset.recall[key] = val;
       }));
       root.querySelector('#csCancel').addEventListener('click', closeTopSheet);
+      /* 小模型连接测试：用当前输入框里的配置 ID 发一条极短消息，验证能否连通 */
+      root.querySelector('#smallApiTest').addEventListener('click', async () => {
+        const cfgId = root.querySelector('#smallApiInput').value.trim();
+        const res = root.querySelector('#smallApiTestResult');
+        if (!cfgId) { res.innerHTML = '<span style="color:var(--ink-3);">未填写配置 ID，将使用默认 API</span>'; return; }
+        res.innerHTML = '<span class="spin" style="display:inline-block;"></span> 测试中…';
+        try {
+          const r = await lightAI({ messages: [{ role: 'user', content: '回复"ok"两个字即可' }], apiConfigId: cfgId, timeoutMs: 20000 });
+          if (r && (r.text || r.content)) res.innerHTML = '<span style="color:var(--accent);">✓ 连接成功，已收到回复</span>';
+          else res.innerHTML = '<span style="color:var(--danger);">✗ 配置返回空，将回退默认 API</span>';
+        } catch (e) {
+          res.innerHTML = '<span style="color:var(--danger);">✗ 连接失败：' + esc((e && e.message) ? e.message : e) + '</span>';
+        }
+      });
       root.querySelector('#csSave').addEventListener('click', async () => {
         coset.card = root.querySelector('#cardInput').value.trim();
         coset.smallApi = root.querySelector('#smallApiInput').value.trim();
