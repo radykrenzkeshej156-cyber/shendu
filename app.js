@@ -314,17 +314,18 @@ const S = {
   rBook: null, rChapter: null, rChapters: [], rParas: [],
   rParaCur: 0, rParaLocal: 0, rUI: false, rMaxLoaded: 400, readerChapterIndex: 0,
   coSession: null, generating: false,
-  mindFilter: 'all', mindBookId: null, mindView: 'timeline', mapTopic: null, mindQuery: '',
+  mindFilter: 'all', mindFrom: null, mindBookId: null, mindView: 'timeline', mapTopic: null, mindQuery: '',
 };
 
 /* ───────── 主题（Day 雾白 / Night 炭黑） ───────── */
 function applyTheme(t) {
   S.theme = t === 'night' ? 'night' : 'day';
   document.body.setAttribute('data-theme', S.theme);
+  /* 主题写入启动快照：下次开屏在首帧前就恢复，夜间模式不再先亮后暗 */
+  try { localStorage.setItem('deepread_theme', S.theme); } catch (e) {}
 }
 function toggleTheme() {
   applyTheme(S.theme === 'night' ? 'day' : 'night');
-  upsert('settings', { ...coreadSettingsRec(), id: 'coread', theme: S.theme });
   toast(S.theme === 'night' ? '夜晚' : '雾白');
 }
 /* 组装 coread 设置记录（含 theme 字段） */
@@ -583,7 +584,7 @@ let html = `<div class="h-row"><div><div class="h-page">此刻</div>
   if (b) {
     const chTitle = bookCurrentChapterTitle(b);
     html += `<div class="now-row" data-bid="${esc(b.id)}">
-      ${bookCoverHtml(b)}
+      ${bookCoverHtml(b, 'now-cover')}
       <div class="now-meta"><div class="t">${esc(b.title)}</div>
       <div class="m">${chTitle ? esc(chTitle) : ''}<br>${timeAgo(b.lastReadAt)}</div>
       <span class="go">›</span></div>
@@ -650,7 +651,7 @@ let html = `<div class="h-row"><div><div class="h-page">此刻</div>
   const dth = $id('deskTheme');
   if (dth) dth.addEventListener('click', toggleTheme);
   const drs = $id('deskResonate');
-  if (drs) drs.addEventListener('click', () => { switchTab('mind'); renderMind('共鸣'); });
+  if (drs) drs.addEventListener('click', () => { switchTab('mind'); renderMind('共鸣', 'desk'); });
   $qa('#deskBody .now-row').forEach(c => c.addEventListener('click', () => openReader(c.dataset.bid)));
   $qa('#deskBody .q-item[data-qid]').forEach(el => el.addEventListener('click', () => openQuestionDetail(el.dataset.qid)));
   $qa('#deskBody .thought-item[data-pid]').forEach(el => el.addEventListener('click', () => openPracticeDetail(el.dataset.pid)));
@@ -2346,9 +2347,10 @@ async function openSessionList() {
     },
   });
 }/* ───────── 思想空间（类型筛选 + 时间线 / 地图双视图） ───────── */
-async function renderMind(filter) {
+async function renderMind(filter, fromTab) {
   S.tab = 'mind';
   S.mindFilter = filter || S.mindFilter || 'all';
+  if (fromTab) S.mindFrom = fromTab;  // 记录从哪个页面进来的，供返回键回跳
   setTabActive('mind');
   $id('p-mind').classList.add('active');
   $id('p-desk').classList.remove('active');
@@ -2388,10 +2390,13 @@ async function renderMind(filter) {
   }
 
   let html = `<div class="h-row"><div><div class="h-page">${esc(S.mindFilter === '我的理解' ? '理解' : S.mindFilter)}</div>
-    <div class="h-sub"><button class="back-inline" data-back="all">‹ 两本手账</button></div></div>`;
+    <div class="h-sub"><button class="back-inline" data-back="all">‹ ${S.mindFrom === 'desk' ? '回到此刻' : '两本手账'}</button></div></div>`;
 
   if (S.mindFilter === '共鸣') {
     html += resonates.length ? renderResonateList(resonates) : '<div class="empty">读到时收藏的共鸣会在这里</div>';
+    $id('mindBody').innerHTML = html;
+    bindMindEvents();
+    return;
   } else if (S.mindFilter === '问题') {
     html += questions.length ? renderQuestionList(questions) : '<div class="empty">还没有悬题</div>';
   } else {
@@ -2617,7 +2622,10 @@ function renderTimelineList() {
 }
 function bindMindEvents() {
   $qa('#mindBody .mind-tabs button').forEach(b => b.addEventListener('click', () => renderMind(b.dataset.f)));
-  $qa('#mindBody .back-inline').forEach(b => b.addEventListener('click', () => renderMind('all')));
+  $qa('#mindBody .back-inline').forEach(b => b.addEventListener('click', () => {
+    if (S.mindFrom === 'desk') { S.mindFrom = null; switchTab('desk'); }
+    else renderMind('all');
+  }));
   $qa('#mindBody .thought-item').forEach(el => el.addEventListener('click', (e) => {
     if (e.target.closest('.mini-tag')) return;
     openInsightDetail(el.dataset.iid);
@@ -3479,7 +3487,7 @@ function openCoreadSettings() {
       fontInput.addEventListener('change', () => {
         const f = fontInput.files[0];
         if (!f) return;
-        if (f.size > 2 * 1024 * 1024) { toast('字体文件过大，不超过 2MB'); fontInput.value = ''; return; }
+        if (f.size > 60 * 1024 * 1024) { toast('字体文件过大，不超过 60MB'); fontInput.value = ''; return; }
         const r = new FileReader();
         r.onload = () => {
           const b64 = String(r.result).split(',')[1] || '';
@@ -3565,6 +3573,7 @@ async function addTimelineEvent(kind, text, type, anchor) {
 /* ───────── 导航 ───────── */
 function switchTab(tab) {
   S.tab = tab;
+  S.mindFrom = null;  // 切页即清：返回键回跳只对「此页 → 共鸣」这一次进入生效
   if (tab === 'desk') renderDesk();
   else if (tab === 'lib') renderLib();
   else if (tab === 'life') renderLife();
@@ -3609,6 +3618,8 @@ async function init() {
   await loadCoreadSettings();
   applyReaderTypography();
   applyReaderFont();
+  /* 开屏即终态：用启动快照恢复主题（与 index.html 内联脚本配合，防夜间模式闪白） */
+  try { applyTheme(localStorage.getItem('deepread_theme') === 'night' ? 'night' : 'day'); } catch (e) {}
   /* 打开 App 默认进入「书桌」，不再自动打开上次的阅读器 */
   renderDesk();
   /* 后台尝试改变分析（节流 7 天） */
