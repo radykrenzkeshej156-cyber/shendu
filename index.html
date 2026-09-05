@@ -49,12 +49,12 @@
       <div class="reader-inner" id="rInner"></div>
     </div>
     <footer class="reader-bottom" id="readerBottom">
-      <button id="rCo"><span class="ic">
-        <svg viewBox="0 0 24 24" class="av-ico" width="20" height="20" fill="none" stroke-width="1.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 10h.01M15.5 10h.01M8.5 14.5c1.2.9 2.6 1.3 3.5 1.3s2.3-.4 3.5-1.3"/></svg>
-      </span><span id="rCoName">共读</span></button>
       <button id="rDetail"><span class="ic">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke-width="1.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="M12 8v4M12 16h.01"/></svg>
       </span><span>详情</span></button>
+      <button id="rCo"><span class="ic">
+        <svg viewBox="0 0 24 24" class="av-ico" width="20" height="20" fill="none" stroke-width="1.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 10h.01M15.5 10h.01M8.5 14.5c1.2.9 2.6 1.3 3.5 1.3s2.3-.4 3.5-1.3"/></svg>
+      </span><span id="rCoName">共读</span></button>
       <button id="rMind"><span class="ic">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke-width="1.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M8 9h8M8 12.5h8M8 16h5"/></svg>
       </span><span>思想</span></button>
@@ -70,16 +70,19 @@
         <div class="co-name" id="coName">共读</div>
         <div class="co-topic" id="coTopic">——</div>
       </div>
+      <button class="co-ctx" id="coCtx">上下文</button>
       <button class="co-close" id="coClose" aria-label="收起">⌄</button>
     </div>
     <div class="co-quote" id="coQuote" hidden></div>
     <div class="co-msgs" id="coMsgs"></div>
     <div class="co-tools" id="coTools">
-      <button id="coSaveI">记下来</button>
-      <button id="coSaveQ">留悬题</button>
-      <button id="coCtx">上下文</button>
-      <button id="coSess">话题</button>
-      <button id="coRefresh">刷新位置</button>
+      <div class="co-tools-left">
+        <button id="coSaveI">记下来</button>
+        <button id="coSaveQ">留悬题</button>
+      </div>
+      <div class="co-tools-right">
+        <button id="coSess">话题</button>
+      </div>
     </div>
     <div class="co-input">
       <input id="coInput" placeholder="说说你的理解…" autocomplete="off">

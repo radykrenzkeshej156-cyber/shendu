@@ -45,6 +45,9 @@ const $qa = (sel) => typeof sel === 'string' ? Array.from(document.querySelector
 function esc(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\function esc(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}'); }
 function uid() { return Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
 let _toastTimer = null;
 function toast(msg, dur = 2200) {
@@ -1033,7 +1036,6 @@ async function applyTraceDots() {
   if (!S.rBook || !S.rChapter) return;
   const inner = $id('rInner');
   if (!inner) return;
-  inner.querySelectorAll('.trace-dot').forEach(d => d.remove());
   const traces = await loadTraces(S.rBook.id);
   const ch = S.rChapter;
   const base = chapterParaStart(S.rBook, ch.id);
@@ -1043,20 +1045,26 @@ async function applyTraceDots() {
     const num = base + i;
     const hits = traces.filter(t => t.chapterId === ch.id && t.paraNum === num);
     if (!hits.length) return;
-    const hasInsight = hits.some(t => t.type === 'insight');
-    const hasQuestion = hits.some(t => t.type === 'question');
-    const hasResonate = hits.some(t => t.type === 'resonate');
-    /* 明显痕迹：整段下划线 + 段尾大圆点 */
-    const mark = document.createElement('span');
-    mark.className = 'trace-mark ' + (hasQuestion ? 'question' : hasInsight ? 'insight' : hasResonate ? 'resonate' : '');
-    mark.innerHTML = '•';
-    mark.title = (hasQuestion ? '悬题 ' : '') + (hasInsight ? '理解 ' : '') + (hasResonate ? '共鸣 ' : '');
-    mark.addEventListener('click', (ev) => {
+    /* 精确划线：用 mark 包裹选中的文字（共鸣=荧光笔 / 谈这句=下划线 / 理解=波浪线 / 问题=波浪线另一色） */
+    const rawText = pEl.textContent;
+    let html = esc(rawText);
+    for (const t of hits) {
+      const q = (t.quote || '').trim();
+      if (!q) continue;
+      const cls = t.type === 'resonate' ? 'rl-resonate'
+        : t.type === 'coread' ? 'rl-coread'
+        : t.type === 'question' ? 'rl-question' : 'rl-insight';
+      const eq = esc(q);
+      if (!eq) continue;
+      const re = new RegExp(escapeRegExp(eq), 'g');
+      html = html.replace(re, `<mark class="${cls}" data-tid="${esc(t.id)}">${eq}</mark>`);
+    }
+    pEl.innerHTML = html;
+    pEl.classList.add('has-trace');
+    pEl.querySelectorAll('mark[data-tid]').forEach(m => m.addEventListener('click', (ev) => {
       ev.stopPropagation();
-      openTraceDetail(hits[0].id);
-    });
-    pEl.appendChild(mark);
-    pEl.classList.add('has-trace', hasQuestion ? 't-question' : hasInsight ? 't-insight' : 't-resonate');
+      openTraceDetail(m.dataset.tid);
+    }));
   });
 }
 function updateAllTraces() { applyTraceDots().then(() => {}); }
@@ -1175,7 +1183,7 @@ async function saveResonate(quote, para) {
   await upsert('traces', {
     id: 'tr_' + uid(), bookId: S.rBook.id, chapterId: S.rChapter.id,
     paraNum: para, type: 'resonate', annotationId: ann.id,
-    summary: quote.slice(0, 40), ts: Date.now(),
+    quote, summary: quote.slice(0, 40), ts: Date.now(),
   });
   addTimelineEvent('收藏了一处共鸣', `「${quote.slice(0, 40)}${quote.length > 40 ? '…' : ''}」`, 'resonate');
   toast('已收藏为共鸣');
@@ -1337,7 +1345,7 @@ async function persistCoSession(s) {
   await upsert('traces', {
     id: 'tr_' + uid(), bookId: s.bookId, chapterId: s.chapterId,
     paraNum: s.paraNum || 0, type: 'coread', sessionId: s.id,
-    summary: s.quote ? s.quote.slice(0, 40) : (chapter ? chapter.title : ''), ts: Date.now(),
+    quote: s.quote || '', summary: s.quote ? s.quote.slice(0, 40) : (chapter ? chapter.title : ''), ts: Date.now(),
   });
   addTimelineEvent('开始共读', `${S.rBook ? S.rBook.title : ''} · ${s.topic}`, 'coread', { bookId: s.bookId, chapterId: s.chapterId });
   updateAllTraces();
@@ -1784,7 +1792,7 @@ async function createInsight(type, text, anchor) {
   await upsert('traces', {
     id: 'tr_' + uid(), bookId: anchor.bookId, chapterId: anchor.chapterId,
     paraNum: anchor.paraNum || 0, type: 'insight', insightId: root.id,
-    summary: text.slice(0, 40), ts: Date.now(),
+    quote: anchor.quote || '', summary: text.slice(0, 40), ts: Date.now(),
   });
   if (tags.length) await bumpTags(tags);
   addTimelineEvent(type === '实践' ? '记录了实践' : type === '概念' ? '记下概念' : '留下理解',
@@ -1894,7 +1902,7 @@ async function createQuestion(q) {
   await upsert('traces', {
     id: 'tr_' + uid(), bookId: q.bookId, chapterId: q.chapterId,
     paraNum: q.paraNum || 0, type: 'question', questionId: rec.id,
-    summary: q.text.slice(0, 40), ts: Date.now(),
+    quote: q.quote || '', summary: q.text.slice(0, 40), ts: Date.now(),
   });
   if (tags.length) await bumpTags(tags);
   addTimelineEvent('留下悬题', q.text, 'question', { bookId: q.bookId, chapterId: q.chapterId });
@@ -2217,7 +2225,6 @@ $id('coSaveQ').addEventListener('click', () => {
   openQuestionSheet({ bookId: S.rBook.id, chapterId: S.rChapter.id, paraNum: S.rParaCur, quote: S.coSession ? S.coSession.quote : '' });
 });
 $id('coSess').addEventListener('click', openSessionList);
-$id('coRefresh').addEventListener('click', refreshCoPosition);
 /* 本次共读上下文查看入口：透明展示这一轮 AI 实际看到了什么 */
 $id('coCtx').addEventListener('click', openCtxView);
 function openCtxView() {
@@ -2929,7 +2936,6 @@ async function openBookDetail(bookId) {
     title: book.title,
     html: `
       <div style="text-align:center;font-size:12.5px;color:var(--ink-3);margin-bottom:10px;">${esc(chTitle || '未开始')} · 上次阅读 ${book.lastReadAt ? timeAgo(book.lastReadAt) : '—'} · 共读 ${coCount} 次</div>
-      <div class="btn-row"><button class="btn-p" id="bdContinue">继续阅读</button></div>
 
       <div class="section-label" style="margin-top:20px;">这本书本身</div>
       ${concepts.length
@@ -2950,7 +2956,6 @@ async function openBookDetail(bookId) {
 
       <div class="btn-row"><button class="btn-c" id="bdClose">关闭</button></div>`,
     onOpen: (root) => {
-      root.querySelector('#bdContinue').addEventListener('click', () => { closeTopSheet(); openReader(bookId); });
       root.querySelector('#bdClose').addEventListener('click', closeTopSheet);
       root.querySelector('#bdLife').addEventListener('click', () => { closeTopSheet(); closeReader(); switchTab('life'); });
       root.querySelector('#bdU').addEventListener('click', () => { closeTopSheet(); switchTab('mind'); renderMind('我的理解'); });
