@@ -2389,14 +2389,18 @@ async function renderMind(filter, fromTab) {
     return;
   }
 
-  let html = `<div class="h-row"><div><div class="h-page">${esc(S.mindFilter === '我的理解' ? '理解' : S.mindFilter)}</div>
+  const filterLabel = S.mindFilter === '我的理解' ? '理解' : S.mindFilter;
+  let html = `<div class="h-row"><div><div class="h-page">${esc(filterLabel)}</div>
     <div class="h-sub"><button class="back-inline" data-back="all">‹ ${S.mindFrom === 'desk' ? '回到此刻' : '两本手账'}</button></div></div>`;
+  /* 三个 tab 栏：理解 / 问题 / 共鸣，可直接切换 */
+  html += `<div class="mind-tabs">
+    <button class="${S.mindFilter === '我的理解' ? 'active' : ''}" data-f="我的理解">理解 <span style="color:var(--ink-3);font-size:11px;">${roots.length}</span></button>
+    <button class="${S.mindFilter === '问题' ? 'active' : ''}" data-f="问题">问题 <span style="color:var(--ink-3);font-size:11px;">${questions.length}</span></button>
+    <button class="${S.mindFilter === '共鸣' ? 'active' : ''}" data-f="共鸣">共鸣 <span style="color:var(--ink-3);font-size:11px;">${resonates.length}</span></button>
+  </div>`;
 
   if (S.mindFilter === '共鸣') {
     html += resonates.length ? renderResonateList(resonates) : '<div class="empty">读到时收藏的共鸣会在这里</div>';
-    $id('mindBody').innerHTML = html;
-    bindMindEvents();
-    return;
   } else if (S.mindFilter === '问题') {
     html += questions.length ? renderQuestionList(questions) : '<div class="empty">还没有悬题</div>';
   } else {
@@ -3577,7 +3581,7 @@ function switchTab(tab) {
   if (tab === 'desk') renderDesk();
   else if (tab === 'lib') renderLib();
   else if (tab === 'life') renderLife();
-  else renderMind();
+  else { S.mindFilter = 'all'; renderMind(); }
 }
 $qa('.tabbar button').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
 

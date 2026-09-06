@@ -143,7 +143,6 @@ body {
   background-color: var(--bg);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  transition: background-color .5s ease, color .5s ease;
 }
 button { font-family: inherit; cursor: pointer; background: none; border: none; color: inherit; }
 input, textarea { font-family: inherit; color: var(--ink); }
@@ -154,7 +153,6 @@ input, textarea { font-family: inherit; color: var(--ink); }
 .pages::before {
   content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
   background: var(--bg-glow-1), var(--bg-glow-2), var(--bg);
-  transition: background .5s ease;
 }
 .page { display: none; }
 .page.active { display: block; animation: pageIn .42s cubic-bezier(.22,.8,.3,1); }
@@ -224,7 +222,6 @@ input, textarea { font-family: inherit; color: var(--ink); }
   backdrop-filter: blur(var(--blur-strong)) saturate(1.45);
   border: 1px solid var(--glass-border);
   box-shadow: inset 0 1px 0 var(--glass-highlight), var(--shadow-2);
-  transition: background .5s ease;
 }
 .tabbar button {
   flex: 1; min-width: 0; color: var(--ink-3);
@@ -319,7 +316,7 @@ input, textarea { font-family: inherit; color: var(--ink); }
 .book-tape .more:active { transform: scale(.9); }
 
 /* 此刻 / 桌面（只显示一本，大封面） */
-.now-row { display: flex; gap: 24px; align-items: center; justify-content: center; margin-top: 12px; cursor: pointer; }
+.now-row { display: flex; gap: 24px; align-items: center; justify-content: center; margin: 18px 0; padding: 14px 0; cursor: pointer; }
 .now-row .cover { width: 128px; aspect-ratio: 2 / 3; flex-shrink: 0; }
 .now-meta { flex: 0 1 auto; min-width: 0; text-align: left; }
 .now-meta .t { font-size: 17px; font-weight: 450; letter-spacing: .02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -383,7 +380,7 @@ input, textarea { font-family: inherit; color: var(--ink); }
 .journal .j-note { font-size: 11px; color: var(--ink-3); margin-top: 5px; padding-left: 4px; }
 
 /* 思想页 Tab（理解/问题/共鸣） */
-.mind-tabs { display: flex; gap: 8px; overflow-x: auto; padding: 6px 0 14px; scrollbar-width: none; }
+.mind-tabs { display: flex; gap: 8px; overflow-x: auto; padding: 8px 0 18px; scrollbar-width: none; margin: 4px 0 8px; }
 .mind-tabs::-webkit-scrollbar { display: none; }
 .mind-tabs button {
   padding: 8px 15px; border-radius: 100px; color: var(--ink-2); font-size: 12.5px;
