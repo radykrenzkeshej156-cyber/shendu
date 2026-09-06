@@ -143,6 +143,7 @@ body {
   background-color: var(--bg);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  transition: background-color .5s ease, color .5s ease;
 }
 button { font-family: inherit; cursor: pointer; background: none; border: none; color: inherit; }
 input, textarea { font-family: inherit; color: var(--ink); }
@@ -153,6 +154,7 @@ input, textarea { font-family: inherit; color: var(--ink); }
 .pages::before {
   content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
   background: var(--bg-glow-1), var(--bg-glow-2), var(--bg);
+  transition: background .5s ease;
 }
 .page { display: none; }
 .page.active { display: block; animation: pageIn .42s cubic-bezier(.22,.8,.3,1); }
@@ -222,6 +224,7 @@ input, textarea { font-family: inherit; color: var(--ink); }
   backdrop-filter: blur(var(--blur-strong)) saturate(1.45);
   border: 1px solid var(--glass-border);
   box-shadow: inset 0 1px 0 var(--glass-highlight), var(--shadow-2);
+  transition: background .5s ease;
 }
 .tabbar button {
   flex: 1; min-width: 0; color: var(--ink-3);
@@ -378,19 +381,6 @@ input, textarea { font-family: inherit; color: var(--ink); }
 .journal .j-label { font-size: 12px; letter-spacing: .2em; color: var(--ink-2); padding-left: 4px; }
 .journal .j-count { font-size: 36px; font-weight: 200; color: var(--ink); margin-top: 12px; }
 .journal .j-note { font-size: 11px; color: var(--ink-3); margin-top: 5px; padding-left: 4px; }
-
-/* 思想页 Tab（理解/问题/共鸣） */
-.mind-tabs { display: flex; gap: 8px; overflow-x: auto; padding: 8px 0 18px; scrollbar-width: none; margin: 4px 0 8px; }
-.mind-tabs::-webkit-scrollbar { display: none; }
-.mind-tabs button {
-  padding: 8px 15px; border-radius: 100px; color: var(--ink-2); font-size: 12.5px;
-  white-space: nowrap; flex-shrink: 0; letter-spacing: .4px;
-  background: var(--glass); border: 1px solid var(--glass-border);
-  -webkit-backdrop-filter: blur(var(--blur)); backdrop-filter: blur(var(--blur));
-  box-shadow: inset 0 1px 0 var(--glass-highlight);
-  transition: color .25s ease, background .25s ease;
-}
-.mind-tabs button.active { color: var(--ink); background: var(--accent-soft); }
 
 /* 思想条目：不是堆砌卡片，而是排版 + 微弱材质差异 */
 .trow { display: flex; justify-content: space-between; align-items: baseline; }

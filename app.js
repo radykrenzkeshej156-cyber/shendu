@@ -230,7 +230,6 @@ async function loadCoreadSettings() {
   const s = rows.find(x => x.id === 'coread');
   if (s) {
     S.companionId = s.companionId || null;
-    if (s.theme) applyTheme(s.theme);
     const d = defaultCoset();
     S.coset = {
       ctxMsgs: s.ctxMsgs || d.ctxMsgs,
@@ -651,7 +650,7 @@ let html = `<div class="h-row"><div><div class="h-page">此刻</div>
   const dth = $id('deskTheme');
   if (dth) dth.addEventListener('click', toggleTheme);
   const drs = $id('deskResonate');
-  if (drs) drs.addEventListener('click', () => { switchTab('mind'); renderMind('共鸣', 'desk'); });
+  if (drs) drs.addEventListener('click', () => { renderMind('共鸣', 'desk'); setTabActive('desk'); });
   $qa('#deskBody .now-row').forEach(c => c.addEventListener('click', () => openReader(c.dataset.bid)));
   $qa('#deskBody .q-item[data-qid]').forEach(el => el.addEventListener('click', () => openQuestionDetail(el.dataset.qid)));
   $qa('#deskBody .thought-item[data-pid]').forEach(el => el.addEventListener('click', () => openPracticeDetail(el.dataset.pid)));
@@ -2351,7 +2350,8 @@ async function renderMind(filter, fromTab) {
   S.tab = 'mind';
   S.mindFilter = filter || S.mindFilter || 'all';
   if (fromTab) S.mindFrom = fromTab;  // 记录从哪个页面进来的，供返回键回跳
-  setTabActive('mind');
+  /* fromTab === 'desk' 时保持此刻 tab 高亮，不切到思想 */
+  if (fromTab !== 'desk') setTabActive('mind');
   $id('p-mind').classList.add('active');
   $id('p-desk').classList.remove('active');
   $id('p-lib').classList.remove('active');
@@ -2391,13 +2391,7 @@ async function renderMind(filter, fromTab) {
 
   const filterLabel = S.mindFilter === '我的理解' ? '理解' : S.mindFilter;
   let html = `<div class="h-row"><div><div class="h-page">${esc(filterLabel)}</div>
-    <div class="h-sub"><button class="back-inline" data-back="all">‹ ${S.mindFrom === 'desk' ? '回到此刻' : '两本手账'}</button></div></div>`;
-  /* 三个 tab 栏：理解 / 问题 / 共鸣，可直接切换 */
-  html += `<div class="mind-tabs">
-    <button class="${S.mindFilter === '我的理解' ? 'active' : ''}" data-f="我的理解">理解 <span style="color:var(--ink-3);font-size:11px;">${roots.length}</span></button>
-    <button class="${S.mindFilter === '问题' ? 'active' : ''}" data-f="问题">问题 <span style="color:var(--ink-3);font-size:11px;">${questions.length}</span></button>
-    <button class="${S.mindFilter === '共鸣' ? 'active' : ''}" data-f="共鸣">共鸣 <span style="color:var(--ink-3);font-size:11px;">${resonates.length}</span></button>
-  </div>`;
+    <div class="h-sub"><button class="back-inline" data-back="all">‹ ${S.mindFrom === 'desk' ? '回到此刻' : '两本手账'}</button></div></div></div>`;
 
   if (S.mindFilter === '共鸣') {
     html += resonates.length ? renderResonateList(resonates) : '<div class="empty">读到时收藏的共鸣会在这里</div>';
@@ -3581,7 +3575,7 @@ function switchTab(tab) {
   if (tab === 'desk') renderDesk();
   else if (tab === 'lib') renderLib();
   else if (tab === 'life') renderLife();
-  else { S.mindFilter = 'all'; renderMind(); }
+  else renderMind();
 }
 $qa('.tabbar button').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
 
