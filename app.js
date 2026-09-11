@@ -46,6 +46,32 @@ function esc(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, function(m){ return '\\' + m; }); }
+/* 4.8：轻量 Markdown 渲染（先转义 HTML，再处理 **加粗** / *斜体* / `代码` / 标题 / 列表）
+   供章节精炼等 AI 生成的文本展示，避免 **文字** 显示成原始星号 */
+function mdToHtml(src) {
+  let s = esc(src);
+  const lines = s.split(/\n/);
+  const out = [];
+  for (const line of lines) {
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    if (h) {
+      const lv = h[1].length;
+      out.push(`<div style="font-size:${17 - lv * 2}px;font-weight:600;margin:10px 0 4px;">${mdInline(h[2])}</div>`);
+    } else if (/^[-*·•]\s+/.test(line)) {
+      out.push(`<div style="padding-left:1em;">· ${mdInline(line.replace(/^[-*·•]\s+/, ''))}</div>`);
+    } else if (/^\d+[.、]\s+/.test(line)) {
+      out.push(`<div style="padding-left:1em;">${mdInline(line)}</div>`);
+    } else out.push(`<div>${mdInline(line) || '&nbsp;'}</div>`);
+  }
+  return out.join('');
+}
+function mdInline(s) {
+  return s
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/__([^_]+)__/g, '<b>$1</b>')
+    .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, '$1<i>$2</i>')
+    .replace(/`([^`]+)`/g, '<code style="font-size:.92em;background:var(--accent-soft);border-radius:4px;padding:1px 5px;">$1</code>');
+}
 function uid() { return Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
 let _toastTimer = null;
 function toast(msg, dur = 2200) {
@@ -578,8 +604,8 @@ let html = `<div class="h-row"><div><div class="h-page">此刻</div>
     </div></div>`;
 
   /* 正在读：只显示一本，大封面 */
-  html += '<div class="section-label">正 在 读</div>';
   const b = reading[0];
+  /* 4.8：去掉「正在读」小标题，阅读区直接呈现 */
   if (b) {
     const chTitle = bookCurrentChapterTitle(b);
     html += `<div class="now-row" data-bid="${esc(b.id)}">
@@ -604,9 +630,9 @@ let html = `<div class="h-row"><div><div class="h-page">此刻</div>
     }).join('');
   }
 
-  /* 进行中的实践 */
+  /* 进行中的实践（4.8：与「此刻的书籍」之间留出大幅间距） */
   if (ongoing.length) {
-    html += '<div class="section-label">进 行 中 的 实 践</div>';
+    html += '<div class="section-label" style="margin-top:88px;">进 行 中 的 实 践</div>';
     html += ongoing.map(p => {
       const book = S.books.find(b => b.id === p.bookId);
       return `<div class="thought-item card practice-card" data-pid="${esc(p.id)}">
@@ -840,7 +866,7 @@ function chapterSummaryCardHtml(ch) {
       <span class="cs-state">${hasSummary ? '⤵ 展开看看' : '未生成'}</span>
     </div>
     <div class="cs-body"${hasSummary ? ' hidden' : ''}>
-      ${hasSummary ? `<div class="cs-text">${esc(ch.summary)}</div>
+      ${hasSummary ? `<div class="cs-text">${mdToHtml(ch.summary)}</div>
         ${concepts.length ? `<div class="cs-concepts"><b>本章概念：</b>${concepts.map(c => `<span class="cs-concept" data-cid="${esc(c.id)}">${esc(c.term)}</span>`).join('')}</div>` : ''}
         <div class="cs-actions"><button class="cs-btn" data-refresh="1">重新生成</button><button class="cs-btn cs-fold">收起</button></div>`
         : `<div class="cs-empty">进入本章时自动生成精炼，供共读时快速定位本章内容。</div>
@@ -1311,7 +1337,7 @@ async function updateCompanionAvatar() {
     const c = await A.characters.get(S.companionId);
     const name = c && c.name ? c.name : '共读';
     if (av) { av.textContent = name[0] || '·'; av.classList.remove('gray'); }
-    if (nm) nm.textContent = name.length > 4 ? name.slice(0, 4) : name;
+    if (nm) nm.textContent = name;
     if (coAv) coAv.textContent = name[0] || '·';
     if (coNm) coNm.textContent = name;
   } catch (e) {}
@@ -2369,23 +2395,27 @@ async function renderMind(filter, fromTab) {
     /* 两本手账本 */
     let html = `<div class="h-row"><div><div class="h-page">思想</div>
       <div class="h-sub">两本手账 · 翻开它</div></div></div>`;
+    /* 4.8：两本手账做成真手账尺寸，画面正中一左一右排列，文字放在手账下方（同书籍卡片） */
     html += `<div class="journal-grid">
-      <div class="journal" data-open="我的理解">
-        <span class="ring"></span>
-        <div class="j-label">理 解</div>
-        <div class="j-count">${roots.length}</div>
-        <div class="j-note">我自己的思想节点</div>
+      <div class="journal-cell" data-open="我的理解">
+        <div class="journal">
+          <span class="ring"></span>
+          <div class="j-count">${roots.length}</div>
+        </div>
+        <div class="book-foot"><div class="t">理 解</div>
+        <div class="m">${roots.length} 条思想节点</div></div>
       </div>
-      <div class="journal" data-open="问题">
-        <span class="ring"></span>
-        <div class="j-label">问 题</div>
-        <div class="j-count">${questions.length}</div>
-        <div class="j-note">悬而未决，带着读</div>
+      <div class="journal-cell" data-open="问题">
+        <div class="journal">
+          <span class="ring"></span>
+          <div class="j-count">${questions.length}</div>
+        </div>
+        <div class="book-foot"><div class="t">问 题</div>
+        <div class="m">${questions.length} 条悬而未决</div></div>
       </div>
     </div>`;
-    if (!roots.length && !questions.length) html += '<div class="empty">读着读着，会有的</div>';
     $id('mindBody').innerHTML = html;
-    $qa('#mindBody .journal').forEach(el => el.addEventListener('click', () => renderMind(el.dataset.open)));
+    $qa('#mindBody .journal-cell').forEach(el => el.addEventListener('click', () => renderMind(el.dataset.open)));
     return;
   }
 
@@ -2880,7 +2910,9 @@ async function openPracticeDetail(id) {
         await removeTimelineByText(p.belief + (p.action ? ' → ' + p.action : ''), p.bookId ? { bookId: p.bookId } : null);
         S.practices = await listData('practices');
         toast('实践已删除');
-        renderMind();
+        /* 4.8 修复：删除后返回上级界面（生活页），不再跳到思想页 */
+        if (S.tab === 'life') renderLife();
+        else if (S.tab === 'desk') renderDesk();
       });
     },
   });
@@ -3022,9 +3054,29 @@ function openBookMenu(bookId) {
       root.querySelector('#bmCover').addEventListener('click', () => { closeTopSheet(); openCoverUpload(bookId); });
       root.querySelector('#bmDelete').addEventListener('click', async () => {
         closeTopSheet();
-        const ok = await uiConfirm('删除这本书', '删除后，这本书的原文、章节、概念会从书库移除，只删「书的世界」。你在这本书里留下的理解、问题、共鸣、实践、改变都会保留，只是失去出处。确定删除吗？', '删除');
-        if (!ok) return;
-        await deleteBook(bookId);
+        /* 4.8：删除书时可选「连同书里留下的内容一起删除」 */
+        const withContent = await new Promise((resolve) => {
+          openSheet({
+            title: '删除这本书',
+            html: `
+              <div style="font-size:13.5px;line-height:1.8;color:var(--ink-2);margin-bottom:6px;">《${esc(b.title)}》的原文、章节、概念会从书库移除。</div>
+              <div class="field" style="margin-top:12px;">
+                <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:var(--ink);"><input type="checkbox" id="delBookWithContent" class="low-sat-cb"> 同时删除我在这本书里留下的内容</label>
+                <div style="font-size:12px;color:var(--ink-3);margin-top:8px;line-height:1.7;">包含：理解、问题、共鸣、实践、改变、共读话题与阅读痕迹。不勾选则全部保留，仅失去出处。</div>
+              </div>
+              <div class="btn-row"><button class="btn-c" id="delBookCancel">取消</button><button class="btn-p" id="delBookOk" style="background:var(--danger);">删除</button></div>`,
+            onOpen: (root) => {
+              root.querySelector('#delBookCancel').addEventListener('click', () => { closeTopSheet(); resolve(false); });
+              root.querySelector('#delBookOk').addEventListener('click', () => {
+                const w = root.querySelector('#delBookWithContent').checked;
+                closeTopSheet();
+                resolve(w ? 'with' : true);
+              });
+            },
+          });
+        });
+        if (!withContent) return;
+        await deleteBook(bookId, withContent === 'with');
         S.books = S.books.filter(x => x.id !== bookId);
         toast('已删除');
         renderLib();
@@ -3073,14 +3125,27 @@ function openCoverUpload(bookId) {
   });
 }
 
-async function deleteBook(bookId) {
+/* withContent=true 时连同书里留下的内容（理解/问题/共鸣/实践/改变/共读话题）一并删除 */
+async function deleteBook(bookId, withContent) {
   await removeById('books', bookId);
   const chaps = await listCol('chapters', true);
   for (const c of chaps) { if (c.data && c.data.bookId === bookId) await A.db.delete('chapters', c.id); }
-  /* 4.0 两个世界：删除书，只删「书的世界」——原文/章节/概念/书上痕迹。
-     用户的世界——理解/问题/共鸣/实践/改变/共读对话——全部保留，仅失去出处。 */
-  for (const col of ['traces', 'concepts']) {
+  /* 4.0 两个世界：删除书默认只删「书的世界」——原文/章节/概念/书上痕迹。
+     4.8：勾选「同时删除书里留下的内容」时，把用户层记录一并清掉。 */
+  const cols = ['traces', 'concepts'];
+  if (withContent) cols.push('insights', 'questions', 'annotations', 'practices', 'changes', 'sessions');
+  for (const col of cols) {
     for (const r of await listCol(col, true)) { if (r.data && r.data.bookId === bookId) await A.db.delete(col, r.id); }
+  }
+  /* 联动清理内存缓存 */
+  if (withContent) {
+    S.insights = S.insights.filter(x => x.bookId !== bookId);
+    S.questions = S.questions.filter(x => x.bookId !== bookId);
+    S.annotations = S.annotations.filter(x => x.bookId !== bookId);
+    S.practices = S.practices.filter(x => x.bookId !== bookId);
+    S.changes = S.changes.filter(x => x.bookId !== bookId);
+    S.concepts = S.concepts.filter(x => x.bookId !== bookId);
+    S.sessions = S.sessions.filter(x => x.bookId !== bookId);
   }
   /* 从所有书单中移除这本书 */
   for (const g of S.groups) {
@@ -3572,6 +3637,9 @@ async function addTimelineEvent(kind, text, type, anchor) {
 function switchTab(tab) {
   S.tab = tab;
   S.mindFrom = null;  // 切页即清：返回键回跳只对「此页 → 共鸣」这一次进入生效
+  /* 4.8 修复（遗留 bug）：从此刻打开共鸣后，S.mindFilter 残留为「共鸣」，
+     导致之后进入思想页直接变成共鸣界面。切页时重置筛选，思想页始终从手账开始。 */
+  S.mindFilter = 'all';
   if (tab === 'desk') renderDesk();
   else if (tab === 'lib') renderLib();
   else if (tab === 'life') renderLife();
