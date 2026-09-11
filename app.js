@@ -3460,17 +3460,8 @@ function openCoreadSettings() {
       <label style="display:flex;align-items:center;gap:4px;font-size:13px;"><input type="checkbox" class="low-sat-cb" id="ckLong" ${coset.includeMemLong ? 'checked' : ''}> 长期记忆</label>
     </div>`;
 
-  const rdrHtml = `阅读器排版
-    <div class="field"><label>正文文字大小</label>
-      <div class="type-chips">${[85, 100, 115, 130, 145].map(n => `<button class="type-chip${(coset.rdrBody || 100) === n ? ' sel' : ''}" data-rb="${n}">${n}%</button>`).join('')}</div></div>
-    <div class="field"><label>章节精炼文字大小</label>
-      <div class="type-chips">${[85, 100, 115, 130, 145].map(n => `<button class="type-chip${(coset.rdrSummary || 100) === n ? ' sel' : ''}" data-rs="${n}">${n}%</button>`).join('')}</div></div>
-    <div class="field"><label>共读内容文字大小</label>
-      <div class="type-chips">${[85, 100, 115, 130, 145].map(n => `<button class="type-chip${(coset.rdrCoread || 100) === n ? ' sel' : ''}" data-rc="${n}">${n}%</button>`).join('')}</div></div>
-    <div class="field"><label>正文字体（导入本地字体文件）</label>
-      <input type="file" id="rdrFontFile" accept=".ttf,.otf,.woff,.woff2">
-      <div id="rdrFontStatus" style="font-size:12px;color:var(--ink-3);margin-top:6px;">${coset.rdrFontName ? '当前字体：' + esc(coset.rdrFontName) : '未导入，使用默认衬线字体'}</div>
-      <div style="display:flex;gap:8px;margin-top:8px;"><button class="btn-c" id="rdrFontReset" style="flex:1;padding:10px;border-radius:10px;font-size:12.5px;">恢复默认字体</button></div></div>`;
+  /* 5.0：原「阅读器排版」板块已移除——字号/字体/对齐统一到「外观 → 通用」，避免两处重复 */
+  const rdrHtml = '';
 
   const ctxState = `本次共读上下文
     <div class="field" style="font-size:12px;color:var(--ink-3);line-height:1.6;">
@@ -3495,7 +3486,6 @@ function openCoreadSettings() {
     html: `<div class="setting-section">${ctxHtml}</div>
       <div class="setting-section" style="margin-top:18px;">${recallHtml}</div>
       <div class="setting-section" style="margin-top:18px;">${memHtml}</div>
-      <div class="setting-section" style="margin-top:18px;">${rdrHtml}</div>
       <div class="btn-row"><button class="btn-c" id="csCancel">取消</button><button class="btn-p" id="csSave">保存</button></div>
       <div class="setting-section" style="margin-top:18px;padding-top:14px;border-top:1px dashed var(--line);">
         <div class="section-label">本次共读 AI 看到的上下文</div>
@@ -3531,42 +3521,7 @@ function openCoreadSettings() {
         coset.recall[key] = val;
       }));
       root.querySelector('#csCancel').addEventListener('click', closeTopSheet);
-      /* 阅读器字号选择 */
-      root.querySelectorAll('.type-chip[data-rb]').forEach(c => c.addEventListener('click', () => {
-        root.querySelectorAll('.type-chip[data-rb]').forEach(x => x.classList.remove('sel'));
-        c.classList.add('sel'); coset.rdrBody = parseInt(c.dataset.rb);
-      }));
-      root.querySelectorAll('.type-chip[data-rs]').forEach(c => c.addEventListener('click', () => {
-        root.querySelectorAll('.type-chip[data-rs]').forEach(x => x.classList.remove('sel'));
-        c.classList.add('sel'); coset.rdrSummary = parseInt(c.dataset.rs);
-      }));
-      root.querySelectorAll('.type-chip[data-rc]').forEach(c => c.addEventListener('click', () => {
-        root.querySelectorAll('.type-chip[data-rc]').forEach(x => x.classList.remove('sel'));
-        c.classList.add('sel'); coset.rdrCoread = parseInt(c.dataset.rc);
-      }));
-      /* 导入字体：读取文件转 base64 存到 coset */
-      const fontInput = root.querySelector('#rdrFontFile');
-      const fontStatus = root.querySelector('#rdrFontStatus');
-      fontInput.addEventListener('change', () => {
-        const f = fontInput.files[0];
-        if (!f) return;
-        if (f.size > 60 * 1024 * 1024) { toast('字体文件过大，不超过 60MB'); fontInput.value = ''; return; }
-        const r = new FileReader();
-        r.onload = () => {
-          const b64 = String(r.result).split(',')[1] || '';
-          coset.rdrFontB64 = b64;
-          coset.rdrFontName = f.name;
-          if (fontStatus) fontStatus.textContent = '当前字体：' + f.name;
-          toast('字体已载入，保存后生效');
-        };
-        r.onerror = () => toast('字体读取失败');
-        r.readAsDataURL(f);
-      });
-      root.querySelector('#rdrFontReset').addEventListener('click', () => {
-        coset.rdrFontB64 = ''; coset.rdrFontName = '';
-        if (fontStatus) fontStatus.textContent = '未导入，使用默认衬线字体';
-        toast('已恢复默认字体');
-      });
+      /* 5.0：阅读器排版相关绑定已移除（字号/字体统一在「外观 → 通用」） */
       /* 小模型连接测试：用当前输入框里的配置 ID 发一条极短消息，验证能否连通 */
       root.querySelector('#smallApiTest').addEventListener('click', async () => {
         const cfgId = root.querySelector('#smallApiInput').value.trim();
@@ -3591,7 +3546,6 @@ function openCoreadSettings() {
         coset.includeMsgs = root.querySelector('#ckMsgs').checked;
         coset.includeCrossBook = root.querySelector('#ckCross').checked;
         await saveCoreadSettings();
-        applyReaderTypography();
         applyReaderFont();
         closeTopSheet();
         toast('已保存');
