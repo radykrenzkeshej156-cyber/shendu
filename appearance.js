@@ -244,12 +244,19 @@
     renderFontLib(root);
   }
 
-  /* ───────── 应用：注入覆盖样式 ───────── */
-  function applyAppearance() {
+  /* ───────── 应用：注入覆盖样式（异步：媒体引用需先换回 dataURL） ───────── */
+  let _applySeq = 0;
+  async function applyAppearance() {
     if (!AR) return;
+    const seq = ++_applySeq;
     const theme = document.body.getAttribute('data-theme') === 'night' ? 'dark' : 'light';
     const M = AR[theme] || AR.light;
     const C = M.colors, H = M.homeBg, R = M.readerBg, K = AR.common;
+    /* 5.3：media-store:// 引用先换回 dataURL（带缓存），避免 CSS 里出现不可显示的引用 */
+    const H2 = Object.assign({}, H, { img: await resolveImg(H.img) });
+    const R2 = Object.assign({}, R, { img: await resolveImg(R.img) });
+    const J2 = { u: await resolveImg((M.jCover || {}).u), q: await resolveImg((M.jCover || {}).q) };
+    if (seq !== _applySeq) return;  // 期间又有新的应用请求，放弃过期结果
     let st = document.getElementById('arStyle');
     if (!st) { st = document.createElement('style'); st.id = 'arStyle'; document.head.appendChild(st); }
     const sel = `[data-theme="${theme === 'dark' ? 'night' : 'day'}"]`;
@@ -261,22 +268,21 @@ ${sel} mark.rl-coread{text-decoration-color:${hexA(C.underline,.8)} !important;}
 ${sel} mark.rl-insight{text-decoration-color:${hexA(C.underline,.55)} !important;}
 ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important;}`;
     /* ② 主页背景图 */
-    if (H.img) {
-      const size = H.fit === 'contain' ? 'contain' : H.fit === 'stretch' ? '100% 100%' : 'cover';
-      css += `.pages-bg{position:fixed;inset:0;z-index:-1;pointer-events:none;background-image:url("${H.img}");background-size:${size};background-position:center;background-repeat:no-repeat;opacity:${H.opacity};}`;
-      if (H.mask > 0) css += `.pages-bg::after{content:'';position:absolute;inset:0;background:linear-gradient(rgba(0,0,0,${H.mask}),rgba(0,0,0,${H.mask}));}`;
+    if (H2.img) {
+      const size = H2.fit === 'contain' ? 'contain' : H2.fit === 'stretch' ? '100% 100%' : 'cover';
+      css += `.pages-bg{position:fixed;inset:0;z-index:-1;pointer-events:none;background-image:url("${H2.img}");background-size:${size};background-position:center;background-repeat:no-repeat;opacity:${H2.opacity};}`;
+      if (H2.mask > 0) css += `.pages-bg::after{content:'';position:absolute;inset:0;background:linear-gradient(rgba(0,0,0,${H2.mask}),rgba(0,0,0,${H2.mask}));}`;
     } else css += `.pages-bg{display:none !important;}`;
     /* ⑤ 手帐封面（思想页两本手帐） */
-    const J = M.jCover || {};
-    if (J.u) css += `.journal-cell[data-open="我的理解"] .journal{background-image:url("${J.u}");background-size:cover;background-position:center;}`;
-    if (J.q) css += `.journal-cell[data-open="问题"] .journal{background-image:url("${J.q}");background-size:cover;background-position:center;}`;
+    if (J2.u) css += `.journal-cell[data-open="我的理解"] .journal{background-image:url("${J2.u}");background-size:cover;background-position:center;}`;
+    if (J2.q) css += `.journal-cell[data-open="问题"] .journal{background-image:url("${J2.q}");background-size:cover;background-position:center;}`;
     /* ③④ 阅读器：背景图存在时强制底层透明（4.9 修复：.reader-inner 底色盖住背景图） */
-    if (R.img) {
-      const size = R.fit === 'contain' ? 'contain' : R.fit === 'stretch' ? '100% 100%' : 'cover';
+    if (R2.img) {
+      const size = R2.fit === 'contain' ? 'contain' : R2.fit === 'stretch' ? '100% 100%' : 'cover';
       css += `.reader,.reader-scroll,.reader-inner{background:transparent !important;background-color:transparent !important;}`;
-      css += `.reader-bgimg{position:absolute;inset:0;z-index:0;pointer-events:none;background-image:url("${R.img}");background-size:${size};background-position:center;background-repeat:no-repeat;opacity:${R.opacity};}`;
+      css += `.reader-bgimg{position:absolute;inset:0;z-index:0;pointer-events:none;background-image:url("${R2.img}");background-size:${size};background-position:center;background-repeat:no-repeat;opacity:${R2.opacity};}`;
     } else {
-      css += `.reader{background:${R.color || 'var(--bg-reader)'} !important;}`;
+      css += `.reader{background:${R2.color || 'var(--bg-reader)'} !important;}`;
       css += `.reader-bgimg{display:none !important;}`;
     }
     /* ⑤ 通用排版（正文颜色跟随主题 --ink，不再单独设置）
@@ -287,10 +293,52 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
 .para.head{font-family:${fontStack(K.titleFont)} !important;font-size:${K.titleSize}px !important;color:var(--ink) !important;text-align:${K.titleAlign} !important;font-weight:${K.titleWeight} !important;letter-spacing:${K.ls}em !important;line-height:${K.lh} !important;margin:38px 0 ${Math.max(K.pg, 14)}px !important;}
 .chap-title{font-family:${fontStack(K.titleFont)} !important;font-size:${K.titleSize}px !important;color:var(--ink) !important;text-align:${K.titleAlign} !important;font-weight:${K.titleWeight} !important;letter-spacing:.02em;}
 .chap-num{color:var(--ink-3) !important;}`;
+    if (seq !== _applySeq) return;
+    /* 内容守卫：CSS 没变化就绝不重写 style 标签（避免无谓的样式重算触发宿主抖动） */
+    const st0 = document.getElementById('arStyle');
+    if (st0 && st0.textContent === css) { ensureReaderBgLayer(); return; }
     st.textContent = css;
     ensureArCss();
     ensureReaderBgLayer();
     injectHero();
+  }
+  /* ───────── 媒体引用（5.3 性能修复核心） ─────────
+     此前主页背景/主图/阅读背景/手帐封面全以 base64 dataURL 存进 settings 记录，
+     每次保存都要整体序列化几 MB，宿主内存压力过大而被重启。
+     现改为：保存时 dataURL → media.put 换成 media-store:// 引用（Blob 落盘），
+     显示时 media.get 换回 dataURL（带内存缓存）。 */
+  const mediaCache = new Map();
+  async function resolveImg(src) {
+    if (!src) return '';
+    if (!src.startsWith('media-store://')) return src;
+    if (mediaCache.has(src)) return mediaCache.get(src);
+    try {
+      const r = await window.AiPhone.media.get({ ref: src });
+      const d = (r && r.dataUrl) || '';
+      mediaCache.set(src, d);
+      return d;
+    } catch (e) { return ''; }
+  }
+  async function putImg(dataUrl) {
+    try {
+      const r = await window.AiPhone.media.put({ dataUrl });
+      if (r && r.ref) { mediaCache.set(r.ref, dataUrl); return r.ref; }
+    } catch (e) { console.warn('[深读] media.put 失败，回退 dataURL 存储', e); }
+    return dataUrl;  // 兜底：媒体库不可用时维持旧行为
+  }
+  /* 把 AR 里所有 data: 形式的图片换成引用（保存前调用，幂等） */
+  async function compactImages(rec) {
+    for (const m of ['light', 'dark']) {
+      const M = rec[m];
+      if (!M) continue;
+      for (const slot of [M.homeBg, M.hero, M.readerBg, M.jCover]) {
+        if (!slot) continue;
+        for (const k of ['img', 'u', 'q']) {
+          const v = slot[k];
+          if (typeof v === 'string' && v.startsWith('data:')) slot[k] = await putImg(v);
+        }
+      }
+    }
   }
   function hexA(c, a) {
     if (!c) return c;
@@ -307,7 +355,10 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
     const reader = document.getElementById('reader');
     if (!reader) return;
     let layer = reader.querySelector('.reader-bgimg');
-    const want = !!(AR && AR[document.body.getAttribute('data-theme') === 'night' ? 'dark' : 'light'].readerBg.img);
+    const themeNow = document.body.getAttribute('data-theme') === 'night' ? 'dark' : 'light';
+    const src = AR && AR[themeNow] && AR[themeNow].readerBg.img;
+    const want = !!src;
+    if (layer && src) layer.style.backgroundImage = src.startsWith('media-store://') ? 'none' : `url("${src}")`;
     if (!want) { if (layer) layer.style.backgroundImage = 'none'; return; }
     if (!layer) {
       layer = document.createElement('div');
@@ -652,6 +703,8 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
           const keep = { templates: AR.templates, activeTpl: AR.activeTpl };
           AR = arClone(draft);
           AR.templates = keep.templates; AR.activeTpl = keep.activeTpl;
+          /* 5.3：先把 base64 图片转成媒体引用再入库（避免几 MB dataURL 撑爆序列化） */
+          await compactImages(AR);
           await saveAppearance();
           applyAppearance();
           closeTopSheet();
@@ -681,6 +734,7 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
             dark: arClone(draft.dark),
           });
           AR.activeTpl = '';
+          await compactImages(AR);
           await saveAppearance();
           renderTplList(root);
           toast('模板已保存（含深浅两套外观）');
