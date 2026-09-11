@@ -566,24 +566,41 @@
     }));
   }
 
-  /* ───────── 启动挂接 ───────── */
-  /* 「此刻」页设置按钮旁注入「外观」入口 */
-  const _origRenderDesk2 = window.renderDesk;
-  window.renderDesk = async function (...args) {
-    const r = await _origRenderDesk2.apply(this, args);
+  /* ───────── 启动挂接 ─────────
+     不依赖 App 内部函数：用 MutationObserver 监听「此刻」页容器，
+     只要「设置」按钮出现且「外观」按钮不在，就立刻补上。
+     （此前包装 renderDesk 的方式依赖运行时细节，在该平台不可靠） */
+  function injectAppearanceBtn() {
     try {
+      if (document.getElementById('deskAppearance')) return;
       const dst = document.getElementById('deskSettings');
-      if (dst && !document.getElementById('deskAppearance')) {
-        const btn = document.createElement('button');
-        btn.id = 'deskAppearance';
-        btn.className = 'h-btn';
-        btn.textContent = '外观';
-        btn.addEventListener('click', openAppearanceSettings);
-        dst.parentNode.insertBefore(btn, dst);
-      }
+      if (!dst || !dst.parentNode) return;
+      const btn = document.createElement('button');
+      btn.id = 'deskAppearance';
+      btn.className = 'h-btn';
+      btn.textContent = '外观';
+      btn.addEventListener('click', openAppearanceSettings);
+      dst.parentNode.insertBefore(btn, dst);
     } catch (e) {}
-    return r;
-  };
+  }
+  function watchDesk() {
+    injectAppearanceBtn();
+    const body = document.getElementById('deskBody');
+    if (!body || body._arWatch) { if (body) injectAppearanceBtn(); return; }
+    body._arWatch = true;
+    new MutationObserver(() => injectAppearanceBtn()).observe(body, { childList: true, subtree: true });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', watchDesk);
+  } else {
+    watchDesk();
+  }
+  /* 兜底：前几秒每 500ms 检查一次，覆盖容器延迟挂载的情况 */
+  let _tries = 0;
+  const _iv = setInterval(() => {
+    injectAppearanceBtn();
+    if (++_tries > 20 || document.getElementById('deskAppearance')) clearInterval(_iv);
+  }, 500);
   window.DeepReadAppearance = {
     open: openAppearanceSettings,
     reload: loadAppearance,
