@@ -39,6 +39,8 @@
     homeBg: { img: '', fit: 'cover', opacity: 1, mask: 0 },
     hero: { img: '' },
     readerBg: { color: '', img: '', fit: 'cover', opacity: 1 },
+    /* 5.1：手帐封面（思想页两本手帐：u=理解 q=问题） */
+    jCover: { u: '', q: '' },
   });
   const COMMON_DEF = {
     bodyFont: '', bodySize: 17, bodyAlign: 'justify',
@@ -81,6 +83,7 @@
         if (r.fit) out[m].readerBg.fit = r.fit;
         if (r.bgOpacity != null) out[m].readerBg.opacity = r.bgOpacity;
         if (r.bgColor) out[m].readerBg.color = r.bgColor;
+        if (s.jCover && typeof s.jCover === 'object') out[m].jCover = Object.assign(out[m].jCover, s.jCover);
       }
     }
     if (Array.isArray(saved.templates)) {
@@ -156,6 +159,10 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
       css += `.pages-bg{position:fixed;inset:0;z-index:-1;pointer-events:none;background-image:url("${H.img}");background-size:${size};background-position:center;background-repeat:no-repeat;opacity:${H.opacity};}`;
       if (H.mask > 0) css += `.pages-bg::after{content:'';position:absolute;inset:0;background:linear-gradient(rgba(0,0,0,${H.mask}),rgba(0,0,0,${H.mask}));}`;
     } else css += `.pages-bg{display:none !important;}`;
+    /* ⑤ 手帐封面（思想页两本手帐） */
+    const J = M.jCover || {};
+    if (J.u) css += `.journal-cell[data-open="我的理解"] .journal{background-image:url("${J.u}");background-size:cover;background-position:center;}`;
+    if (J.q) css += `.journal-cell[data-open="问题"] .journal{background-image:url("${J.q}");background-size:cover;background-position:center;}`;
     /* ③④ 阅读器：背景图存在时强制底层透明（4.9 修复：.reader-inner 底色盖住背景图） */
     if (R.img) {
       const size = R.fit === 'contain' ? 'contain' : R.fit === 'stretch' ? '100% 100%' : 'cover';
@@ -389,18 +396,29 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
     const colorsHtml = (which) =>
       THEME_KEYS.map(k => colorRow(THEME_LABELS[k] || k, k, draft[which].colors)).join('');
     const bgHtml = (which) => `
-      <div class="ar-sec">主页背景</div>
-      ${imgRow('主页背景图', '整个 App 主界面的页面背景，不影响阅读器')}
-      ${segRow('填充方式', 'fit', draft[which].homeBg, [{ v: 'cover', l: '填满' }, { v: 'contain', l: '完整' }, { v: 'stretch', l: '拉伸' }])}
-      ${sliderRow('图片不透明度', 'opacity', draft[which].homeBg, 0, 1, 0.05)}
-      ${sliderRow('暗色遮罩', 'mask', draft[which].homeBg, 0, 0.8, 0.05)}
-      <div class="ar-sec">主页主图</div>
-      ${imgRow('主页主图', '主页顶部独立展示的图片卡片')}
-      <div class="ar-sec">阅读背景</div>
-      ${colorRow('阅读背景色', 'color', draft[which].readerBg)}
-      ${imgRow('阅读背景图', '只作用于阅读页，设置后阅读页底色自动透明')}
-      ${segRow('填充方式', 'fit', draft[which].readerBg, [{ v: 'cover', l: '填满' }, { v: 'contain', l: '完整' }, { v: 'stretch', l: '拉伸' }])}
-      ${sliderRow('背景不透明度', 'opacity', draft[which].readerBg, 0.1, 1, 0.05)}`;
+      <div data-bgsec="jcover">
+        <div class="ar-sec">手帐封面</div>
+        ${imgRow('「理解」手帐封面', '主页 → 思想 → 两本手帐中「理解」的封面图')}
+        ${imgRow('「问题」手帐封面', '主页 → 思想 → 两本手帐中「问题」的封面图')}
+      </div>
+      <div data-bgsec="homebg">
+        <div class="ar-sec">主页背景</div>
+        ${imgRow('主页背景图', '整个 App 主界面的页面背景，不影响阅读器')}
+        ${segRow('填充方式', 'fit', draft[which].homeBg, [{ v: 'cover', l: '填满' }, { v: 'contain', l: '完整' }, { v: 'stretch', l: '拉伸' }])}
+        ${sliderRow('图片不透明度', 'opacity', draft[which].homeBg, 0, 1, 0.05)}
+        ${sliderRow('暗色遮罩', 'mask', draft[which].homeBg, 0, 0.8, 0.05)}
+      </div>
+      <div data-bgsec="hero">
+        <div class="ar-sec">主页主图</div>
+        ${imgRow('主页主图', '主页顶部独立展示的图片卡片')}
+      </div>
+      <div data-bgsec="rdbg">
+        <div class="ar-sec">阅读背景</div>
+        ${imgRow('阅读背景图', '只作用于阅读页，设置后阅读页底色自动透明')}
+        ${segRow('填充方式', 'fit', draft[which].readerBg, [{ v: 'cover', l: '填满' }, { v: 'contain', l: '完整' }, { v: 'stretch', l: '拉伸' }])}
+        ${sliderRow('背景不透明度', 'opacity', draft[which].readerBg, 0.1, 1, 0.05)}
+        ${colorRow('阅读背景色', 'color', draft[which].readerBg)}
+      </div>`;
     const commonHtml = `
       <div class="ar-sec">排版</div>
       ${fontRow('正文字体', 'bodyFont', draft.common)}
@@ -481,19 +499,32 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
         for (const which of ['light', 'dark']) {
           bindColorRows(root.querySelector(`[data-pane="${which}"] [data-sub="colors"]`), draft[which].colors, COLOR_DEF[which]);
         }
-        /* 绑定：浅色/深色背景区（field 顺序：0主页背景图 1填充 2不透明度 3遮罩 4主图 5阅读背景色 6阅读背景图 7填充 8不透明度） */
+        /* 绑定：浅色/深色背景区。
+           5.1 修复：不再按 .field 索引取（拉条等元素不是 .field，索引会错位导致
+           bindColorRows 收到 undefined 抛错，onOpen 中断 → 底部按钮全部失灵）。
+           改为按 data-bgsec 分组容器定位，每个小节内部再找自己的 .field。 */
         for (const which of ['light', 'dark']) {
           const bg = root.querySelector(`[data-pane="${which}"] [data-sub="bg"]`);
-          const fields = bg.querySelectorAll('.field');
-          bindImgRow(fields[0], '.field', draft[which].homeBg);
-          bindSegRows(fields[1], draft[which].homeBg);
-          bindSliderRows(fields[2], draft[which].homeBg);
-          bindSliderRows(fields[3], draft[which].homeBg);
-          bindImgRow(fields[4], '.field', draft[which].hero);
-          bindColorRows(fields[5], draft[which].readerBg, {});
-          bindImgRow(fields[6], '.field', draft[which].readerBg);
-          bindSegRows(fields[7], draft[which].readerBg);
-          bindSliderRows(fields[8], draft[which].readerBg);
+          if (!bg) continue;
+          const sec = (name) => bg.querySelector(`[data-bgsec="${name}"]`);
+          const fieldIn = (secEl, idx) => secEl ? secEl.querySelectorAll('.field')[idx] : null;
+          const segIn = (secEl, name) => secEl ? secEl.querySelector(`.type-chip[data-segk="${name}"]`)?.closest('.field') : null;
+          /* 手帐封面：两本各自独立的 imgRow（用代理对象分别读写 jCover.u / jCover.q） */
+          const jc = draft[which].jCover;
+          const proxy = (k) => ({ get img() { return jc[k]; }, set img(v) { jc[k] = v; } });
+          bindImgRow(fieldIn(sec('jcover'), 0), '.field', proxy('u'));
+          bindImgRow(fieldIn(sec('jcover'), 1), '.field', proxy('q'));
+          /* 主页背景 */
+          bindImgRow(fieldIn(sec('homebg'), 0), '.field', draft[which].homeBg);
+          bindSegRows(segIn(sec('homebg'), 'fit'), draft[which].homeBg);
+          bindSliderRows(sec('homebg'), draft[which].homeBg);
+          /* 主图 */
+          bindImgRow(fieldIn(sec('hero'), 0), '.field', draft[which].hero);
+          /* 阅读背景 */
+          bindImgRow(fieldIn(sec('rdbg'), 0), '.field', draft[which].readerBg);
+          bindSegRows(segIn(sec('rdbg'), 'fit'), draft[which].readerBg);
+          bindSliderRows(sec('rdbg'), draft[which].readerBg);
+          bindColorRows(sec('rdbg'), draft[which].readerBg, {});
         }
         /* 通用 */
         const cp = root.querySelector('[data-pane="common"]');
