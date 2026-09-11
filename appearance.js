@@ -13,7 +13,8 @@
    ============================================================ */
 'use strict';
 (function () {
-  if (!window.A) return;
+  const A = window.AiPhone || window.A;
+  if (!A) return;
 
   /* ───────── 默认值 ───────── */
   const AR_DEF = {
@@ -61,7 +62,7 @@
 
   async function loadAppearance() {
     try {
-      const rows = await window.A.db.list('settings', { limit: 1000 });
+      const rows = await A.db.list('settings', { limit: 1000 });
       const rec = (rows || []).map(r => (r && r.data) || r).find(x => x && x.id === KEY);
       AR = mergeDef(rec);
     } catch (e) { AR = arDefaults(); }
@@ -69,12 +70,12 @@
   }
   async function saveAppearance() {
     try {
-      const rows = await window.A.db.list('settings', { limit: 1000 });
+      const rows = await A.db.list('settings', { limit: 1000 });
       const found = (rows || []).find(r => r && ((r.data && r.data.id === KEY) || r.id === KEY));
       const recId = found ? (found.id || (found.data && found.data.id)) : null;
-      if (found && recId != null && found.data) await window.A.db.update('settings', found.id, AR);
-      else if (found && recId === KEY) await window.A.db.update('settings', found.id, AR);
-      else await window.A.db.create('settings', AR);
+      if (found && recId != null && found.data) await A.db.update('settings', found.id, AR);
+      else if (found && recId === KEY) await A.db.update('settings', found.id, AR);
+      else await A.db.create('settings', AR);
     } catch (e) { console.warn('[深读] 外观保存失败', e); }
   }
 
