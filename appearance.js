@@ -475,9 +475,11 @@
     {
       const pane = root.querySelector('[data-pane="theme"]');
       /* 第 0 个 .ar-sec 之后直到下一个 .ar-sec 之前是 light，其后是 dark */
+      let cur = 'light';
       pane.querySelectorAll('.ar-crow').forEach(row => {
         let prev = row.previousElementSibling;
         while (prev) { if (prev.classList && prev.classList.contains('ar-sec')) { cur = prev.textContent.includes('炭黑') ? 'dark' : 'light'; break; } prev = prev.previousElementSibling; }
+        const which = cur;
         const k = row.dataset.k;
         const hexEl = row.querySelector('.ar-hex');
         const sw = row.querySelector('.ar-swatch');
@@ -494,7 +496,7 @@
           row.querySelector('input[type=color]').value = normHex(d, '#888888');
         });
       });
-    });
+    }
   }
 
   /* ───────── 模板（保存 ④阅读样式 + ⑤间距） ───────── */
