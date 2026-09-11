@@ -13,8 +13,7 @@
    ============================================================ */
 'use strict';
 (function () {
-  const A = window.AiPhone || window.A;
-  if (!A) return;
+  if (!window.AiPhone) return;
 
   /* ───────── 默认值 ───────── */
   const AR_DEF = {
@@ -62,7 +61,7 @@
 
   async function loadAppearance() {
     try {
-      const rows = await A.db.list('settings', { limit: 1000 });
+      const rows = await window.AiPhone.db.list('settings', { limit: 1000 });
       const rec = (rows || []).map(r => (r && r.data) || r).find(x => x && x.id === KEY);
       AR = mergeDef(rec);
     } catch (e) { AR = arDefaults(); }
@@ -70,12 +69,11 @@
   }
   async function saveAppearance() {
     try {
-      const rows = await A.db.list('settings', { limit: 1000 });
-      const found = (rows || []).find(r => r && ((r.data && r.data.id === KEY) || r.id === KEY));
-      const recId = found ? (found.id || (found.data && found.data.id)) : null;
-      if (found && recId != null && found.data) await A.db.update('settings', found.id, AR);
-      else if (found && recId === KEY) await A.db.update('settings', found.id, AR);
-      else await A.db.create('settings', AR);
+      const rows = await window.AiPhone.db.list('settings', { limit: 1000 });
+      const norm = (rows || []).map(x => (x && typeof x === 'object' && 'data' in x && x.data && typeof x.data === 'object') ? { id: x.id, data: x.data } : { id: (x && x.id) || null, data: x });
+      const found = norm.find(r => r.data && r.data.id === KEY);
+      if (found && found.id) await window.AiPhone.db.update('settings', found.id, AR);
+      else await window.AiPhone.db.create('settings', AR);
     } catch (e) { console.warn('[深读] 外观保存失败', e); }
   }
 
@@ -154,13 +152,14 @@
       css += `.reader-bgimg{position:absolute;inset:0;z-index:0;pointer-events:none;background-image:url("${R.bgImg}");background-size:${size};background-position:center;background-repeat:no-repeat;opacity:${R.bgOpacity};}`;
       if (R.bgOpacity >= .99) css += `.reader-bgimg::after{content:'';position:absolute;inset:0;background:linear-gradient(rgba(0,0,0,${R.bgOpacity > 1 ? 0 : 0}),rgba(0,0,0,0));}`;
     } else css += `.reader-bgimg{display:none !important;}`;
-    css += `.reader-scroll{position:relative;z-index:1;}
+    css += `.reader-scroll{z-index:1;}
 .reader-inner{padding:${R.mt}px ${R.mr}px ${R.mb}px ${R.ml}px !important;}
 .para{font-family:${fontStack(R.bodyFont)} !important;font-size:${R.bodySize}px !important;${R.bodyColor ? `color:${R.bodyColor} !important;` : ''}letter-spacing:${R.ls}em !important;line-height:${R.lh} !important;text-align:${R.bodyAlign} !important;margin:0 0 ${R.pg}px !important;}
 .para.head{font-family:${fontStack(R.titleFont)} !important;font-size:${R.titleSize}px !important;${R.titleColor ? `color:${R.titleColor} !important;` : ''}text-align:${R.titleAlign} !important;font-weight:${R.titleWeight} !important;letter-spacing:${R.ls}em !important;line-height:${R.lh} !important;margin:38px 0 ${Math.max(R.pg, 14)}px !important;}
 .chap-title{font-family:${fontStack(R.titleFont)} !important;font-size:${R.titleSize}px !important;${R.titleColor ? `color:${R.titleColor} !important;` : ''}text-align:${R.titleAlign} !important;font-weight:${R.titleWeight} !important;letter-spacing:.02em;}
 .chap-num{color:${R.titleColor || 'var(--ink-3)'} !important;}`;
     st.textContent = css;
+    ensureArCss();
     ensureReaderBgLayer();
   }
   /* hex → rgba（支持 #rgb/#rrggbb 与已是 rgba 的输入） */
@@ -187,29 +186,34 @@
     }
   }
 
-  /* ───────── 主页主图：包装 renderDesk，在标题行下方注入图片卡片 ───────── */
-  const _origRenderDesk = window.renderDesk;
-  window.renderDesk = async function (...args) {
-    const r = await _origRenderDesk.apply(this, args);
+  /* ───────── 主页主图：MutationObserver 监听「此刻」页渲染 ───────── */
+  function injectHero() {
     try {
-      if (AR && AR.hero && AR.hero.img) {
-        const body = document.getElementById('deskBody');
-        if (body && !body.querySelector('.ar-hero')) {
-          const fig = document.createElement('div');
-          fig.className = 'ar-hero';
-          fig.innerHTML = `<img src="${escHTML(AR.hero.img)}" alt="">`;
-          body.insertBefore(fig, body.firstChild);
-        }
-      }
-    } catch (e) {}
-    return r;
-  };
-  /* 主题切换时联动重涂（浅色/深色主题各自独立颜色一起切换） */
-  const _origApplyTheme = window.applyTheme;
-  window.applyTheme = function (t) {
-    _origApplyTheme(t);
-    applyAppearance();
-  };
+      const body = document.getElementById('deskBody');
+      if (!body) return;
+      const old = body.querySelector('.ar-hero');
+      if (!(AR && AR.hero && AR.hero.img)) { if (old) old.remove(); return; }
+      if (old) { if (old._arHeroSrc === AR.hero.img) return; old.remove(); }
+      const fig = document.createElement('div');
+      fig.className = 'ar-hero';
+      fig._arHeroSrc = AR.hero.img;
+      fig.innerHTML = `<img src="${escHTML(AR.hero.img)}" alt="">`;
+      const head = body.querySelector('.h-row');
+      if (head && head.nextElementSibling) body.insertBefore(fig, head.nextElementSibling);
+      else if (head) head.after(fig);
+      else body.insertBefore(fig, body.firstChild);
+    } catch (e) { console.warn('[深读] 主图注入失败', e); }
+  }
+  function watchHero() {
+    const body = document.getElementById('deskBody');
+    if (!body || body._arHeroWatch) return;
+    body._arHeroWatch = true;
+    new MutationObserver(() => injectHero()).observe(body, { childList: true });
+  }
+  /* 主题切换时联动重涂：监听 data-theme 属性变化，不包装 App 内部函数 */
+  function watchTheme() {
+    new MutationObserver(() => applyAppearance()).observe(document.body, { attributes: true, attributeFilter: ['data-theme'] });
+  }
 
   /* ───────── 通用控件 ───────── */
   function colorRow(label, key, obj) {
@@ -347,6 +351,8 @@
 .ar-tpl .nm{flex:1;font-size:13.5px;}
 .ar-tpl button{padding:5px 10px;border-radius:8px;border:1px solid var(--line);background:var(--surface);font-size:12px;color:var(--ink-2);}
 .ar-sec{font-size:12px;color:var(--ink-3);margin:14px 0 4px;letter-spacing:.08em;}
+.ar-hero{margin:18px 0 6px;border-radius:var(--radius-lg,18px);overflow:hidden;border:1px solid var(--line-soft,rgba(0,0,0,.06));box-shadow:var(--shadow-1,0 1px 2px rgba(0,0,0,.05));aspect-ratio:16/9;background:var(--surface-2,rgba(0,0,0,.04));}
+.ar-hero img{width:100%;height:100%;object-fit:cover;display:block;}
 `;
     document.head.appendChild(st);
   }
@@ -432,11 +438,7 @@
           root.querySelectorAll('.ar-pane').forEach(p => p.classList.toggle('sel', p.dataset.pane === b.dataset.t));
           if (b.dataset.t === 'tpl') renderTplList(root);
         });
-        /* 主题颜色 */
-        bindColorRows(root.querySelector('[data-pane="theme"]'), null, null);
-        root.querySelectorAll('[data-pane="theme"] .ar-crow').forEach(row => {
-          /* 两套主题的同名 key 分开绑定 */
-        });
+        /* 主题颜色（light/dark 两套分开绑定） */
         bindThemeColors(root);
         /* 主页背景 / 主图 */
         bindImgRow(root.querySelector('[data-pane="home"]'), '.field', draft.homeBg);
@@ -587,10 +589,12 @@
   }
   function watchDesk() {
     injectAppearanceBtn();
+    watchHero();
+    watchTheme();
     const body = document.getElementById('deskBody');
     if (!body || body._arWatch) { if (body) injectAppearanceBtn(); return; }
     body._arWatch = true;
-    new MutationObserver(() => injectAppearanceBtn()).observe(body, { childList: true, subtree: true });
+    new MutationObserver(() => { injectAppearanceBtn(); injectHero(); }).observe(body, { childList: true, subtree: true });
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', watchDesk);
@@ -601,6 +605,7 @@
   let _tries = 0;
   const _iv = setInterval(() => {
     injectAppearanceBtn();
+    injectHero();
     if (++_tries > 20 || document.getElementById('deskAppearance')) clearInterval(_iv);
   }, 500);
   window.DeepReadAppearance = {
