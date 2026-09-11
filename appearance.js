@@ -123,18 +123,125 @@
     } catch (e) { console.warn('[深读] 外观保存失败', e); }
   }
 
-  /* ───────── 字体（5.0：移除宋体/楷体/黑体，只保留默认衬线与导入字体） ───────── */
-  function hasCustomFont() {
-    try { return !!(S.coset && S.coset.rdrFontB64 && S.coset.rdrFontName); } catch (e) { return false; }
+  /* ───────── 字体库（5.2：导入 ≤30MB / 列表 / 删除，存 settings:fontlib） ───────── */
+  const FONTLIB_KEY = 'fontlib';
+  let FONTLIB = [];       // [{id, name, b64, at}]
+  let fontlibLoaded = false;
+
+  async function loadFontLib() {
+    try {
+      const rows = await window.AiPhone.db.list('settings', { limit: 1000 });
+      const norm = (rows || []).map(x => (x && typeof x === 'object' && 'data' in x && x.data && typeof x.data === 'object') ? x.data : x);
+      const rec = norm.find(x => x && x.id === FONTLIB_KEY);
+      FONTLIB = (rec && Array.isArray(rec.fonts)) ? rec.fonts : [];
+      /* 5.2 迁移：把旧版存在 coset 里的导入字体收编进字体库 */
+      try {
+        if (S.coset && S.coset.rdrFontB64 && S.coset.rdrFontName && !FONTLIB.some(f => f.name === S.coset.rdrFontName)) {
+          FONTLIB.push({ id: 'font_' + uid9(), name: S.coset.rdrFontName, b64: S.coset.rdrFontB64, at: Date.now() });
+          await saveFontLib();
+        }
+      } catch (e) {}
+    } catch (e) { FONTLIB = []; }
+    fontlibLoaded = true;
+    injectFontFaces();
+  }
+  async function saveFontLib() {
+    try {
+      const rows = await window.AiPhone.db.list('settings', { limit: 1000 });
+      const norm = (rows || []).map(x => (x && typeof x === 'object' && 'data' in x && x.data && typeof x.data === 'object') ? { rid: x.id, data: x.data } : { rid: (x && x.id) || null, data: x });
+      const rec = { id: FONTLIB_KEY, fonts: FONTLIB };
+      const found = norm.find(r => r.data && r.data.id === FONTLIB_KEY);
+      if (found && found.rid) await window.AiPhone.db.update('settings', found.rid, rec);
+      else await window.AiPhone.db.create('settings', rec);
+    } catch (e) { console.warn('[深读] 字体库保存失败', e); }
+  }
+  /* 为库中每个字体注入 @font-face（字体族名用 id，避免重名冲突） */
+  function injectFontFaces() {
+    let st = document.getElementById('arFontFaces');
+    if (!st) { st = document.createElement('style'); st.id = 'arFontFaces'; document.head.appendChild(st); }
+    st.textContent = FONTLIB.map(f =>
+      `@font-face{font-family:'ARFont_${f.id}';src:url(data:font/ttf;base64,${f.b64});font-display:swap;}`
+    ).join('\n');
   }
   function fontStack(v) {
-    if (v === 'custom' && hasCustomFont()) return "'RdrCustom', var(--font-serif)";
+    const f = FONTLIB.find(x => x.id === v);
+    if (f) return `'ARFont_${f.id}', var(--font-serif)`;
     return 'var(--font-serif)';
   }
   function fontOptionsHtml(v) {
     let opts = `<option value=""${!v ? ' selected' : ''}>默认衬线</option>`;
-    if (hasCustomFont()) opts += `<option value="custom"${v === 'custom' ? ' selected' : ''}>导入的字体</option>`;
+    for (const f of FONTLIB) opts += `<option value="${escHTML(f.id)}"${v === f.id ? ' selected' : ''}>${escHTML(f.name)}</option>`;
     return opts;
+  }
+  /* 字体库管理 UI：导入 + 列表（删除） */
+  function fontLibHtml() {
+    return `<div class="ar-sec">字体库</div>
+      <div class="field">
+        <label>导入字体文件（.ttf / .otf / .woff / .woff2，最大 30MB）</label>
+        <input type="file" id="arFontFile" accept=".ttf,.otf,.woff,.woff2">
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <button class="btn-c" id="arFontAdd" style="flex:1;padding:10px;border-radius:10px;font-size:12.5px;">导入到字体库</button>
+        </div>
+        <div id="arFontList" style="margin-top:8px;"></div>
+      </div>`;
+  }
+  function renderFontLib(root) {
+    const list = root.querySelector('#arFontList');
+    if (!list) return;
+    if (!FONTLIB.length) { list.innerHTML = '<div class="ar-none">字体库是空的</div>'; return; }
+    list.innerHTML = FONTLIB.map(f => `<div class="ar-tpl" data-fid="${escHTML(f.id)}">
+      <span class="nm">${escHTML(f.name)}<span style="font-size:10px;color:var(--ink-3);"> · ${(f.b64.length * 0.75 / 1048576).toFixed(1)}MB</span></span>
+      <button data-fact="del">删除</button>
+    </div>`).join('');
+    list.querySelectorAll('button[data-fact="del"]').forEach(b => b.addEventListener('click', async () => {
+      const fid = b.closest('.ar-tpl').dataset.fid;
+      const f = FONTLIB.find(x => x.id === fid);
+      const ok = await uiConfirm('删除字体', '删除「' + (f ? f.name : '') + '」？正在使用它的排版会回退为默认衬线。', '删除');
+      if (!ok) return;
+      FONTLIB = FONTLIB.filter(x => x.id !== fid);
+      await saveFontLib();
+      injectFontFaces();
+      /* 已选中的字体被删则回退默认 */
+      for (const k of ['bodyFont', 'titleFont']) {
+        if (draft.common[k] === fid) draft.common[k] = '';
+      }
+      if (AR.common.bodyFont === fid) AR.common.bodyFont = '';
+      if (AR.common.titleFont === fid) AR.common.titleFont = '';
+      await saveAppearance();
+      applyAppearance();
+      renderFontLib(root);
+      /* 同步刷新两个字体下拉框 */
+      root.querySelectorAll('.ar-select[data-fontk]').forEach(sel => {
+        const k = sel.dataset.fontk;
+        sel.innerHTML = fontOptionsHtml(draft.common[k]);
+      });
+      toast('已删除');
+    }));
+  }
+  function bindFontLib(root) {
+    const file = root.querySelector('#arFontFile');
+    const addBtn = root.querySelector('#arFontAdd');
+    if (!file || !addBtn) return;
+    addBtn.addEventListener('click', () => {
+      const f = file.files && file.files[0];
+      if (!f) { toast('先选择字体文件'); return; }
+      if (f.size > 30 * 1024 * 1024) { toast('字体过大，不超过 30MB'); return; }
+      const r = new FileReader();
+      r.onload = async () => {
+        const dataUrl = String(r.result || '');
+        const b64 = dataUrl.split(',')[1] || '';
+        if (!b64) { toast('字体读取失败'); return; }
+        FONTLIB.push({ id: 'font_' + uid9(), name: f.name, b64, at: Date.now() });
+        await saveFontLib();
+        injectFontFaces();
+        file.value = '';
+        renderFontLib(root);
+        toast('已导入「' + f.name + '」，可在下方正文字体/标题字体中选择');
+      };
+      r.onerror = () => toast('字体读取失败');
+      r.readAsDataURL(f);
+    });
+    renderFontLib(root);
   }
 
   /* ───────── 应用：注入覆盖样式 ───────── */
@@ -172,9 +279,10 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
       css += `.reader{background:${R.color || 'var(--bg-reader)'} !important;}`;
       css += `.reader-bgimg{display:none !important;}`;
     }
-    /* ⑤ 通用排版（正文颜色跟随主题 --ink，不再单独设置） */
-    css += `.reader-scroll{z-index:1;position:relative;}
-.reader-inner{padding:${K.mt}px ${K.mr}px ${K.mb}px ${K.ml}px !important;}
+    /* ⑤ 通用排版（正文颜色跟随主题 --ink，不再单独设置）
+       注意：.reader-scroll 绝不能改 position —— 它靠 absolute+inset:0 撑满滚动，
+       5.1 曾误加 position:relative 导致阅读器无法滑动（已修复） */
+    css += `.reader-inner{padding:${K.mt}px ${K.mr}px ${K.mb}px ${K.ml}px !important;}
 .para{font-family:${fontStack(K.bodyFont)} !important;font-size:${K.bodySize}px !important;color:var(--ink) !important;letter-spacing:${K.ls}em !important;line-height:${K.lh} !important;text-align:${K.bodyAlign} !important;margin:0 0 ${K.pg}px !important;}
 .para.head{font-family:${fontStack(K.titleFont)} !important;font-size:${K.titleSize}px !important;color:var(--ink) !important;text-align:${K.titleAlign} !important;font-weight:${K.titleWeight} !important;letter-spacing:${K.ls}em !important;line-height:${K.lh} !important;margin:38px 0 ${Math.max(K.pg, 14)}px !important;}
 .chap-title{font-family:${fontStack(K.titleFont)} !important;font-size:${K.titleSize}px !important;color:var(--ink) !important;text-align:${K.titleAlign} !important;font-weight:${K.titleWeight} !important;letter-spacing:.02em;}
@@ -208,12 +316,15 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
     }
   }
 
-  /* ───────── 主页主图注入（5.0 修复：去抖 + 内容不变绝不动 DOM，避免宿主重启抖动） ───────── */
+  /* ───────── 主页主图注入（5.2 加强节流：内容不变绝不调度，最短间隔 300ms，
+       避免设置面板操作时 MutationObserver 高频回调导致宿主重启） ───────── */
   let _heroPending = false;
+  let _heroLastRun = 0;
   function injectHero() {
-    if (_heroPending) return;
+    const now = Date.now();
+    if (_heroPending || now - _heroLastRun < 300) return;
     _heroPending = true;
-    requestAnimationFrame(() => { _heroPending = false; _injectHeroNow(); });
+    requestAnimationFrame(() => { _heroPending = false; _heroLastRun = Date.now(); _injectHeroNow(); });
   }
   function _injectHeroNow() {
     try {
@@ -420,6 +531,7 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
         ${colorRow('阅读背景色', 'color', draft[which].readerBg)}
       </div>`;
     const commonHtml = `
+      ${fontLibHtml()}
       <div class="ar-sec">排版</div>
       ${fontRow('正文字体', 'bodyFont', draft.common)}
       ${sliderRow('正文字号', 'bodySize', draft.common, 13, 26, 1)}
@@ -528,6 +640,7 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
         }
         /* 通用 */
         const cp = root.querySelector('[data-pane="common"]');
+        bindFontLib(cp);
         bindFontRows(cp, draft.common);
         bindSegRows(cp, draft.common);
         bindSliderRows(cp, draft.common);
@@ -648,9 +761,15 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
     const body = document.getElementById('deskBody');
     if (!body || body._arWatch) return;
     body._arWatch = true;
-    /* 5.0：回调里只调度一次 rAF 注入 + 内容比对，避免观察循环导致宿主频繁重启 */
-    new MutationObserver(() => { injectAppearanceBtn(); injectHero(); })
-      .observe(body, { childList: true, subtree: true });
+    /* 5.2：回调合并到 rAF 且 injectHero 自带节流与内容守卫；
+       injectAppearanceBtn 本身有幂等守卫（已存在直接 return），
+       不会形成「观察→改DOM→再观察」的循环 */
+    let _mutPending = false;
+    new MutationObserver(() => {
+      if (_mutPending) return;
+      _mutPending = true;
+      requestAnimationFrame(() => { _mutPending = false; injectAppearanceBtn(); injectHero(); });
+    }).observe(body, { childList: true, subtree: true });
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', watchDesk);
@@ -669,4 +788,5 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
     get: () => AR,
   };
   loadAppearance();
+  loadFontLib();
 })();
