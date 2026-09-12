@@ -554,6 +554,7 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
     return fb;
   }
   function bindColorRows(root, obj, defaults) {
+    if (!root) return;
     root.querySelectorAll('.ar-crow').forEach(row => {
       const k = row.dataset.k;
       const hexEl = row.querySelector('.ar-hex');
@@ -580,6 +581,7 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
     </div>`;
   }
   function bindSliderRows(root, obj) {
+    if (!root) return;
     root.querySelectorAll('.ar-srow').forEach(row => {
       const k = row.dataset.k;
       const val = row.querySelector('.ar-sval');
@@ -629,7 +631,11 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
     r.readAsDataURL(file);
   }
   function bindImgRow(root, sel, obj, onChange) {
-    const wrap = root.querySelector(sel);
+    /* 5.6.3 关键修复：调用方传的 root 往往本身就是 .field，
+       而 querySelector 不匹配元素自身 → wrap 恒为 null → 图片行
+       从未绑定成功（5.1 起背景图全部无效的根因）。改为先匹配自身。 */
+    if (!root) return;
+    const wrap = (root.matches && root.matches(sel)) ? root : root.querySelector(sel);
     if (!wrap) return;
     const file = wrap.querySelector('input[type=file]');
     const prev = wrap.querySelector('.ar-imgprev');
@@ -647,6 +653,7 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
       <div class="type-chips">${options.map(o => `<button class="type-chip${obj[key] === o.v ? ' sel' : ''}" data-segk="${key}" data-segv="${o.v}">${escHTML(o.l)}</button>`).join('')}</div></div>`;
   }
   function bindSegRows(root, obj, onChange) {
+    if (!root) return;
     root.querySelectorAll('.type-chip[data-segk]').forEach(c => c.addEventListener('click', () => {
       const k = c.dataset.segk;
       root.querySelectorAll(`.type-chip[data-segk="${k}"]`).forEach(x => x.classList.remove('sel'));
@@ -763,7 +770,7 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
         <button data-t="common">通用</button>
         <button data-t="light">浅色</button>
         <button data-t="dark">深色</button>
-        <span style="flex-shrink:0;font-size:10px;color:var(--ink-3);align-self:center;margin-left:auto;">代码 v5.6.2</span>
+        <span style="flex-shrink:0;font-size:10px;color:var(--ink-3);align-self:center;margin-left:auto;">代码 v5.6.3</span>
       </div>
       <div id="arSub" style="display:none;">
         <div class="ar-tabs" id="arSubTabs">
