@@ -59,6 +59,24 @@
   let AR = null;
   let draft = null;
 
+  /* 5.5：加载外观时把 media-store:// 引用换回 dataURL 存入内存副本，
+     保证面板预览和样式渲染直接可用；保存时 compactImages 再转回引用。
+     （此前引用换不回图片 = 面板显示空 = 看起来像被重置） */
+  async function hydrateImages(rec) {
+    for (const m of ['light', 'dark']) {
+      const M = rec[m];
+      if (!M) continue;
+      if (M.homeBg) M.homeBg.img = await resolveImg(M.homeBg.img);
+      if (M.hero) M.hero.img = await resolveImg(M.hero.img);
+      if (M.readerBg) M.readerBg.img = await resolveImg(M.readerBg.img);
+      if (M.jCover) {
+        M.jCover.u = await resolveImg(M.jCover.u);
+        M.jCover.q = await resolveImg(M.jCover.q);
+      }
+    }
+    return rec;
+  }
+
   function arClone(o) { return JSON.parse(JSON.stringify(o)); }
   function escHTML(s) {
     return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -105,7 +123,7 @@
       const rows = await window.AiPhone.db.list('settings', { limit: 1000 });
       const norm = (rows || []).map(x => (x && typeof x === 'object' && 'data' in x && x.data && typeof x.data === 'object') ? x.data : x);
       const rec = norm.find(x => x && x.id === KEY);
-      AR = mergeDef(rec);
+      AR = await hydrateImages(mergeDef(rec));
     } catch (e) { AR = AR_DEF(); }
     applyAppearance();
   }
@@ -641,10 +659,10 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
       ${pane('tpl', tplHtml)}
       ${pane('common', commonHtml)}
       ${pane('light', `<div class="ar-modehint">当前正在编辑「浅色模式」的外观。保存后可通过主页右上角的深浅模式开关切换查看。</div>
-        <div data-sub="colors">${colorsHtml('light')}</div>
+        <div data-sub="colors" style="display:none;">${colorsHtml('light')}</div>
         <div data-sub="bg" style="display:none;">${bgHtml('light')}</div>`)}
       ${pane('dark', `<div class="ar-modehint">当前正在编辑「深色模式」的外观。保存后可通过主页右上角的深浅模式开关切换查看。</div>
-        <div data-sub="colors">${colorsHtml('dark')}</div>
+        <div data-sub="colors" style="display:none;">${colorsHtml('dark')}</div>
         <div data-sub="bg" style="display:none;">${bgHtml('dark')}</div>`)}
       <div class="btn-row" style="margin-top:14px;">
         <button class="btn-c" id="arCancel">取消</button>
@@ -658,7 +676,15 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
         const tabs = root.querySelector('#arTabs');
         const subWrap = root.querySelector('#arSub');
         const subTabs = root.querySelector('#arSubTabs');
-        /* 顶级标签切换：浅色/深色显示二级「颜色/背景」 */
+        /* 5.5：二级选择（colors/bg）作为状态记住，切深浅后显式应用到新面板，
+           保证「浅色-背景 → 深色」落在「深色-背景」而不是回到颜色 */
+        let curSub = 'colors';
+        const applySub = () => {
+          subTabs.querySelectorAll('button').forEach(x => x.classList.toggle('sel', x.dataset.st === curSub));
+          root.querySelectorAll('.ar-pane.sel [data-sub]').forEach(d => {
+            d.style.display = d.dataset.sub === curSub ? '' : 'none';
+          });
+        };
         tabs.addEventListener('click', (e) => {
           const b = e.target.closest('button[data-t]');
           if (!b) return;
@@ -667,17 +693,14 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
           const t = b.dataset.t;
           root.querySelectorAll('.ar-pane').forEach(p => p.classList.toggle('sel', p.dataset.pane === t));
           subWrap.style.display = (t === 'light' || t === 'dark') ? '' : 'none';
+          if (t === 'light' || t === 'dark') applySub();
           if (t === 'tpl') renderTplList(root);
         });
         subTabs.addEventListener('click', (e) => {
           const b = e.target.closest('button[data-st]');
           if (!b) return;
-          subTabs.querySelectorAll('button').forEach(x => x.classList.remove('sel'));
-          b.classList.add('sel');
-          const st = b.dataset.st;
-          root.querySelectorAll('.ar-pane.sel [data-sub]').forEach(d => {
-            d.style.display = d.dataset.sub === st ? '' : 'none';
-          });
+          curSub = b.dataset.st;
+          applySub();
         });
         /* 绑定：浅色/深色颜色 */
         for (const which of ['light', 'dark']) {
@@ -724,8 +747,11 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
           const keep = { templates: AR.templates, activeTpl: AR.activeTpl };
           AR = arClone(draft);
           AR.templates = keep.templates; AR.activeTpl = keep.activeTpl;
-          /* 5.3：先把 base64 图片转成媒体引用再入库（避免几 MB dataURL 撑爆序列化） */
+          /* 5.3：先把 base64 图片转成媒体引用再入库（避免几 MB dataURL 撑爆序列化），
+             5.5：compactImages 后把引用再 hydrate 回 dataURL 存进内存副本，
+             保证面板预览/样式渲染立即可用，下次打开外观也不会显得被重置 */
           await compactImages(AR);
+          await hydrateImages(AR);
           await saveAppearance();
           applyAppearance();
           closeTopSheet();
