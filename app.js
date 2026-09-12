@@ -632,7 +632,8 @@ let html = `<div class="h-row"><div><div class="h-page">此刻</div>
 
   /* 进行中的实践（4.8：与「此刻的书籍」之间留出大幅间距） */
   if (ongoing.length) {
-    html += '<div class="section-label" style="margin-top:88px;">进 行 中 的 实 践</div>';
+    /* 5.7：恢复正常间距（原 88px 是 4.8 特调的大空隙） */
+    html += '<div class="section-label">进 行 中 的 实 践</div>';
     html += ongoing.map(p => {
       const book = S.books.find(b => b.id === p.bookId);
       return `<div class="thought-item card practice-card" data-pid="${esc(p.id)}">
@@ -772,20 +773,7 @@ async function openReader(bookId, chapterIdTo, paraTo) {
     $id('rChapTitle').textContent = ch ? ch.title : '';
     /* 4.0 渲染携带问题胶囊 */
     renderCarryBar();
-    /* 进入章节 → 章节预处理：若本章还没有精炼，后台预生成（章节地图），不重复生成。
-       4.1：首次自动生成时提示一次（知情，可在共读设置关掉） */
-    if (ch && !ch.summary) {
-      generateChapterSummary(ch).then(() => {
-        /* 若已进入共读且正在用本章，刷新一次上下文展示 */
-        if (S.coSession && S.coSession.chapterId === ch.id) renderCoHeader();
-      });
-      if (!(S.coset && S.coset.summaryNoticed)) {
-        toast('我会在后台生成这一章的「精炼」供共读定位，可去共读设置关闭');
-        S.coset = S.coset || defaultCoset();
-        S.coset.summaryNoticed = true;
-        saveCoreadSettings();
-      }
-    }
+    /* 5.7：移除进入章节时的自动精炼生成——精炼一律手动点击生成 */
     /* 定位段落：paraTo / currentParaNum 一律按「全局段号」处理 */
     S.rParas = ch ? parasOf(ch.text) : [];
     const pBase = chapterParaStart(book, ch.id);
@@ -1016,15 +1004,7 @@ function checkChapterEnd() {
         chip.appendChild(btn);
       } else endQ.hidden = false;
     } else if (endQ) endQ.hidden = true;
-    /* 读完整章 → 以完整章节为依据对已有精炼做更新/修正（节流：距上次生成>30s 才更新） */
-    if (S.rChapter && !S.rChapter._refreshTriggered) {
-      S.rChapter._refreshTriggered = true;
-      if (S.rChapter.summary && S.rChapter.summaryAt && Date.now() - S.rChapter.summaryAt > 30000) {
-        refreshChapterSummary(S.rChapter).then(() => {});
-      } else if (!S.rChapter.summary) {
-        generateChapterSummary(S.rChapter).then(() => {});
-      }
-    }
+    /* 5.7：移除章末自动更新/生成精炼——精炼一律手动 */
   } else {
     chip.hidden = true;
     const endQ = $id('rEndQ');

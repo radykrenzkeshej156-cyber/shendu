@@ -37,7 +37,7 @@
   const MODE_DEF = () => ({
     colors: arClone(COLOR_DEF.light),
     homeBg: { img: '', fit: 'cover', opacity: 1, mask: 0 },
-    hero: { img: '' },
+    hero: { img: '', src: '', crop: '' },
     readerBg: { color: '', img: '', fit: 'cover', opacity: 1 },
     /* 5.1：手帐封面（思想页两本手帐：u=理解 q=问题） */
     jCover: { u: '', q: '' },
@@ -67,7 +67,7 @@
       const M = rec[m];
       if (!M) continue;
       if (M.homeBg) M.homeBg.img = await resolveImg(M.homeBg.img);
-      if (M.hero) M.hero.img = await resolveImg(M.hero.img);
+      if (M.hero) { M.hero.img = await resolveImg(M.hero.img); M.hero.src = await resolveImg(M.hero.src); }
       if (M.readerBg) M.readerBg.img = await resolveImg(M.readerBg.img);
       if (M.jCover) {
         M.jCover.u = await resolveImg(M.jCover.u);
@@ -122,7 +122,9 @@
     try {
       const rows = await window.AiPhone.db.list('settings', { limit: 1000 });
       const norm = (rows || []).map(x => (x && typeof x === 'object' && 'data' in x && x.data && typeof x.data === 'object') ? x.data : x);
-      const rec = norm.find(x => x && x.id === KEY);
+      /* 5.7：库里可能残留多条历史 appearance 记录，取 updAt 最新的一条 */
+      const cands = norm.filter(x => x && x.id === KEY);
+      const rec = cands.sort((a, b) => ((b && b.updAt) || 0) - ((a && a.updAt) || 0))[0];
       AR = await hydrateImages(mergeDef(rec));
     } catch (e) { AR = AR_DEF(); }
     applyAppearance();
@@ -130,13 +132,20 @@
   let lastSaveErr = '';
   async function saveAppearance() {
     if (!AR) return false;
-    AR.id = KEY; AR.v = 2;
+    AR.id = KEY; AR.v = 2; AR.updAt = Date.now();
     try {
       const rows = await window.AiPhone.db.list('settings', { limit: 1000 });
       const norm = (rows || []).map(x => (x && typeof x === 'object' && 'data' in x && x.data && typeof x.data === 'object') ? { rid: x.id, data: x.data } : { rid: (x && x.id) || null, data: x });
-      const found = norm.find(r => r.data && r.data.id === KEY);
-      if (found && found.rid) await window.AiPhone.db.update('settings', found.rid, AR);
+      /* 5.7：写入第一条 appearance 记录，并删除其余同 id 重复记录——
+         历史上 update 失败会退化成 create，库里可能有多条，读写的
+         若不是同一条就会出现「当场生效、重启丢失」的分裂现象 */
+      const matches = norm.filter(r => r.data && r.data.id === KEY);
+      const target = matches[0];
+      if (target && target.rid) await window.AiPhone.db.update('settings', target.rid, AR);
       else await window.AiPhone.db.create('settings', AR);
+      for (const dup of matches.slice(1)) {
+        try { await window.AiPhone.db.delete('settings', dup.rid); } catch (e) {}
+      }
       lastSaveErr = '';
       /* 双保险：主题模式同时写一份到 localStorage，宿主重启后首帧前即可恢复 */
       try { localStorage.setItem('deepread_theme', document.body.getAttribute('data-theme') === 'night' ? 'night' : 'day'); } catch (e2) {}
@@ -201,10 +210,19 @@
     }
     return '';
   }
+  /* 5.7：db.list 返回的行有两种形态（{id,data:{...}} 或 平铺记录），
+     字体读取此前只认 r.data —— 平铺形态下整库被过滤成空，
+     这就是「导入的字体重启后消失」的根因 */
+  function rowList(rows) {
+    return (rows || []).map(x => {
+      if (x && typeof x === 'object' && 'data' in x && x.data && typeof x.data === 'object') return { rid: x.id, data: x.data };
+      return { rid: (x && x.id) || null, data: x };
+    });
+  }
   async function loadFontLib() {
     try {
       const rows = await window.AiPhone.db.list('fonts', { limit: 100 });
-      FONTLIB = (rows || []).map(r => r.data).filter(f => f && f.id && (f.b64 || f.ref));
+      FONTLIB = rowList(rows).map(r => r.data).filter(f => f && f.id && (f.b64 || f.ref));
     } catch (e) { FONTLIB = []; }
     /* 迁移：旧版 settings:fontlib / settings:coread 里的巨型 base64 → 媒体库，然后清除旧记录 */
     try {
@@ -245,7 +263,7 @@
   /* 增删字体：有引用走媒体库删除；记录按单条增删，不触碰 settings */
   async function persistFontLib() {
     try {
-      const rows = await window.AiPhone.db.list('fonts', { limit: 100 });
+      const rows = rowList(await window.AiPhone.db.list('fonts', { limit: 100 }));
       const keep = new Set(FONTLIB.map(f => f.id));
       for (const r of rows) {
         if (r.data && r.data.id && !keep.has(r.data.id)) {
@@ -498,15 +516,15 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
     }
   }
 
-  /* ───────── 主页主图注入（5.2 加强节流：内容不变绝不调度，最短间隔 300ms，
-       避免设置面板操作时 MutationObserver 高频回调导致宿主重启） ───────── */
+  /* ───────── 主页主图注入 ─────────
+     5.7：去掉 300ms 时间节流——它造成启动竞态：watchDesk 首刷消耗掉窗口后，
+     renderDesk 重建 deskBody 触发的注入被跳过且不再重试 →「主图重启后消失」。
+     防抖靠 rAF 合并 + _injectHeroNow 的内容守卫（src 相同不动 DOM）即可。 */
   let _heroPending = false;
-  let _heroLastRun = 0;
   function injectHero() {
-    const now = Date.now();
-    if (_heroPending || now - _heroLastRun < 300) return;
+    if (_heroPending) return;
     _heroPending = true;
-    requestAnimationFrame(() => { _heroPending = false; _heroLastRun = Date.now(); _injectHeroNow(); });
+    requestAnimationFrame(() => { _heroPending = false; _injectHeroNow(); });
   }
   function _injectHeroNow() {
     try {
@@ -630,6 +648,27 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
     r.onerror = () => toast('图片读取失败');
     r.readAsDataURL(file);
   }
+  /* 5.7：主图裁剪——从原图 hero.src 按 crop（''=不裁剪 / 1:3 / 1:4 / 1:5）
+     居中裁出显示图 hero.img；cb(dataUrl) 异步回传结果 */
+  function cropToRatio(src, crop, cb) {
+    const ratio = crop === '1:3' ? 3 : crop === '1:4' ? 4 : crop === '1:5' ? 5 : 0;
+    if (!src || !ratio) { cb(src || ''); return; }
+    const im = new Image();
+    im.onload = () => {
+      try {
+        const w = im.naturalWidth, h = im.naturalHeight;
+        let cw = w, ch = Math.round(w * ratio);
+        if (ch > h) { ch = h; cw = Math.round(h / ratio); }
+        const sx = Math.round((w - cw) / 2), sy = Math.round((h - ch) / 2);
+        const cv = document.createElement('canvas');
+        cv.width = cw; cv.height = ch;
+        cv.getContext('2d').drawImage(im, sx, sy, cw, ch, 0, 0, cw, ch);
+        cb(cv.toDataURL('image/jpeg', 0.88));
+      } catch (e) { cb(src); }
+    };
+    im.onerror = () => cb(src);
+    im.src = src;
+  }
   function bindImgRow(root, sel, obj, onChange) {
     /* 5.6.3 关键修复：调用方传的 root 往往本身就是 .field，
        而 querySelector 不匹配元素自身 → wrap 恒为 null → 图片行
@@ -732,7 +771,8 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
       </div>
       <div data-bgsec="hero">
         <div class="ar-sec">主页主图</div>
-        ${imgRow('主页主图', '主页顶部独立展示的图片卡片')}
+        ${imgRow('主页主图', '主页顶部独立展示的图片卡片，更换后可下方选择裁剪比例')}
+        ${segRow('裁剪比例', 'crop', draft[which].hero, [{ v: '', l: '不裁剪' }, { v: '1:3', l: '1:3' }, { v: '1:4', l: '1:4' }, { v: '1:5', l: '1:5' }])}
       </div>
       <div data-bgsec="rdbg">
         <div class="ar-sec">阅读背景</div>
@@ -770,7 +810,7 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
         <button data-t="common">通用</button>
         <button data-t="light">浅色</button>
         <button data-t="dark">深色</button>
-        <span style="flex-shrink:0;font-size:10px;color:var(--ink-3);align-self:center;margin-left:auto;">代码 v5.6.3</span>
+        <span style="flex-shrink:0;font-size:10px;color:var(--ink-3);align-self:center;margin-left:auto;">代码 v5.7</span>
       </div>
       <div id="arSub" style="display:none;">
         <div class="ar-tabs" id="arSubTabs">
@@ -847,8 +887,28 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
           bindImgRow(fieldIn(sec('homebg'), 0), '.field', draft[which].homeBg);
           bindSegRows(segIn(sec('homebg'), 'fit'), draft[which].homeBg);
           bindSliderRows(sec('homebg'), draft[which].homeBg);
-          /* 主图 */
-          bindImgRow(fieldIn(sec('hero'), 0), '.field', draft[which].hero);
+          /* 主图（5.7：裁剪支持——新图存原图到 src，img 为按 crop 裁剪的结果；
+             切换裁剪比例时从 src 重新裁，可反复调整） */
+          const heroWrap = fieldIn(sec('hero'), 0);
+          const heroObj = draft[which].hero;
+          const refreshHero = () => {
+            const prev = heroWrap && heroWrap.querySelector('.ar-imgprev');
+            if (prev) prev.innerHTML = heroObj.img ? `<img src="${escHTML(heroObj.img)}" alt="">` : '<span class="ar-none">未设置</span>';
+          };
+          const recrop = async () => {
+            const s = await resolveImg(heroObj.src || heroObj.img || '');
+            if (!s) return;
+            if (!heroObj.src) heroObj.src = s;  // 旧数据回退：以当前显示图为原图
+            cropToRatio(s, heroObj.crop, (out) => { heroObj.img = out; refreshHero(); });
+          };
+          bindImgRow(heroWrap, '.field', {
+            get img() { return heroObj.img; },
+            set img(v) {
+              heroObj.src = v;
+              cropToRatio(v, heroObj.crop, (out) => { heroObj.img = out; refreshHero(); });
+            },
+          });
+          bindSegRows(segIn(sec('hero'), 'crop'), heroObj, recrop);
           /* 阅读背景 */
           bindImgRow(fieldIn(sec('rdbg'), 0), '.field', draft[which].readerBg);
           bindSegRows(segIn(sec('rdbg'), 'fit'), draft[which].readerBg);
