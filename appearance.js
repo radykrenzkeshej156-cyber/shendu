@@ -127,8 +127,9 @@
     } catch (e) { AR = AR_DEF(); }
     applyAppearance();
   }
+  let lastSaveErr = '';
   async function saveAppearance() {
-    if (!AR) return;
+    if (!AR) return false;
     AR.id = KEY; AR.v = 2;
     try {
       const rows = await window.AiPhone.db.list('settings', { limit: 1000 });
@@ -136,9 +137,40 @@
       const found = norm.find(r => r.data && r.data.id === KEY);
       if (found && found.rid) await window.AiPhone.db.update('settings', found.rid, AR);
       else await window.AiPhone.db.create('settings', AR);
+      lastSaveErr = '';
       /* 双保险：主题模式同时写一份到 localStorage，宿主重启后首帧前即可恢复 */
       try { localStorage.setItem('deepread_theme', document.body.getAttribute('data-theme') === 'night' ? 'night' : 'day'); } catch (e2) {}
-    } catch (e) { console.warn('[深读] 外观保存失败', e); }
+      return true;
+    } catch (e) {
+      lastSaveErr = (e && (e.message || String(e))) || '未知错误';
+      console.warn('[深读] 外观保存失败', e);
+      return false;
+    }
+  }
+  /* 5.6.2：保存后回读校验——确认记录真的写进去了、图片字段真的在库里。
+     之前保存失败被静默吞掉，用户只能看到「没生效」，无从区分渲染问题还是存储问题 */
+  function countImgSlots(rec) {
+    let n = 0;
+    for (const m of ['light', 'dark']) {
+      const M = (rec && rec[m]) || {};
+      if (M.homeBg && M.homeBg.img) n++;
+      if (M.hero && M.hero.img) n++;
+      if (M.readerBg && M.readerBg.img) n++;
+      if (M.jCover && M.jCover.u) n++;
+      if (M.jCover && M.jCover.q) n++;
+    }
+    return n;
+  }
+  async function verifySaved() {
+    try {
+      const rows = await window.AiPhone.db.list('settings', { limit: 1000 });
+      const norm = (rows || []).map(x => (x && typeof x === 'object' && 'data' in x && x.data && typeof x.data === 'object') ? x.data : x);
+      const rec = norm.find(x => x && x.id === KEY);
+      if (!rec) return '库里找不到外观记录（写入未成功）';
+      const want = countImgSlots(AR), have = countImgSlots(rec);
+      if (have < want) return `图片只写入 ${have}/${want} 张（记录可能被存储层截断）`;
+      return '';
+    } catch (e) { return '校验读取失败：' + ((e && e.message) || e); }
   }
 
   /* ───────── 字体库（5.4：独立 fonts 集合，一条字体一条记录） ─────────
@@ -577,7 +609,7 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
       const img = new Image();
       img.onload = () => {
         try {
-          const MAX = 1600;
+          const MAX = 1280;  // 5.6.2：再降一档，压缩后约 200~400KB，排除超长 dataURL 兼容风险
           const ratio = Math.min(1, MAX / Math.max(img.width, img.height));
           const w = Math.max(1, Math.round(img.width * ratio));
           const h = Math.max(1, Math.round(img.height * ratio));
@@ -731,6 +763,7 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
         <button data-t="common">通用</button>
         <button data-t="light">浅色</button>
         <button data-t="dark">深色</button>
+        <span style="flex-shrink:0;font-size:10px;color:var(--ink-3);align-self:center;margin-left:auto;">代码 v5.6.2</span>
       </div>
       <div id="arSub" style="display:none;">
         <div class="ar-tabs" id="arSubTabs">
@@ -825,19 +858,26 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
         root.querySelector('#arTplSave').addEventListener('click', () => saveTemplate(root));
         /* 保存 */
         root.querySelector('#arCancel').addEventListener('click', closeTopSheet);
-        root.querySelector('#arSave').addEventListener('click', async () => {
-          const keep = { templates: AR.templates, activeTpl: AR.activeTpl };
-          AR = arClone(draft);
-          AR.templates = keep.templates; AR.activeTpl = keep.activeTpl;
-          /* 5.3：先把 base64 图片转成媒体引用再入库（避免几 MB dataURL 撑爆序列化），
-             5.5：compactImages 后把引用再 hydrate 回 dataURL 存进内存副本，
-             保证面板预览/样式渲染立即可用，下次打开外观也不会显得被重置 */
-          await compactImages(AR);
-          await hydrateImages(AR);
-          await saveAppearance();
-          applyAppearance();
-          closeTopSheet();
-          toast('外观已更新（深浅两套均已保存）');
+        const saveBtn = root.querySelector('#arSave');
+        saveBtn.addEventListener('click', async () => {
+          saveBtn.disabled = true;
+          try {
+            const keep = { templates: AR.templates, activeTpl: AR.activeTpl };
+            AR = arClone(draft);
+            AR.templates = keep.templates; AR.activeTpl = keep.activeTpl;
+            await compactImages(AR);
+            await hydrateImages(AR);
+            const ok = await saveAppearance();
+            applyAppearance();
+            /* 5.6.2：回读校验，把「保存是否真的落库、图片是否真的存进去」明确反馈出来 */
+            const err = ok ? await verifySaved() : ('写入失败：' + lastSaveErr);
+            if (err) { toast('保存异常 · ' + err, 4200); return; }
+            closeTopSheet();
+            const n = countImgSlots(AR);
+            toast('外观已更新（深浅两套均已保存' + (n ? ' · 图片 ' + n + ' 张' : '') + '）');
+          } finally {
+            saveBtn.disabled = false;
+          }
         });
         mask.addEventListener('click', (e) => { if (e.target === mask) closeTopSheet(); }, { once: true });
       },
