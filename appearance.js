@@ -370,12 +370,18 @@
 ${sel} mark.rl-coread{text-decoration-color:${hexA(C.underline,.8)} !important;}
 ${sel} mark.rl-insight{text-decoration-color:${hexA(C.underline,.55)} !important;}
 ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important;}`;
-    /* ② 主页背景图 */
+    /* ② 主页背景图。
+       5.6.1 关键修复：5.0 重写时误用了 DOM 中不存在的 .pages-bg 类（回归），
+       主页背景一直没有生效。改回覆盖 .pages::before（styles.css 里真实存在的
+       全屏幕风层）。不透明度/遮罩用叠加渐变层模拟，不动 ::before 的 opacity，
+       避免把底下的 body 底色透出成灰块。 */
     if (H2.img) {
       const size = H2.fit === 'contain' ? 'contain' : H2.fit === 'stretch' ? '100% 100%' : 'cover';
-      css += `.pages-bg{position:fixed;inset:0;z-index:-1;pointer-events:none;background-image:url("${H2.img}");background-size:${size};background-position:center;background-repeat:no-repeat;opacity:${H2.opacity};}`;
-      if (H2.mask > 0) css += `.pages-bg::after{content:'';position:absolute;inset:0;background:linear-gradient(rgba(0,0,0,${H2.mask}),rgba(0,0,0,${H2.mask}));}`;
-    } else css += `.pages-bg{display:none !important;}`;
+      let veil = '';
+      if (H2.mask > 0) veil += `linear-gradient(rgba(0,0,0,${H2.mask}),rgba(0,0,0,${H2.mask})),`;
+      if (H2.opacity < .99) veil += `linear-gradient(${hexA(C.bg, 1 - H2.opacity)},${hexA(C.bg, 1 - H2.opacity)}),`;
+      css += `.pages::before{background:${veil}url("${H2.img}") center / ${size} no-repeat, var(--bg) !important;}`;
+    }
     /* ⑤ 手帐封面（思想页两本手帐） */
     if (J2.u) css += `.journal-cell[data-open="我的理解"] .journal{background-image:url("${J2.u}");background-size:cover;background-position:center;}`;
     if (J2.q) css += `.journal-cell[data-open="问题"] .journal{background-image:url("${J2.q}");background-size:cover;background-position:center;}`;
@@ -420,7 +426,7 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
       const d = (r && r.dataUrl) || '';
       mediaCache.set(src, d);
       return d;
-    } catch (e) { return ''; }
+    } catch (e) { return src; }  /* 换不回时保留原引用，至少下次保存不会把数据弄丢 */
   }
   async function putImg(dataUrl) {
     try {
