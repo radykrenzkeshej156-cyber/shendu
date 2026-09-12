@@ -147,31 +147,53 @@
      就要解析一次巨型记录，宿主内存压力过大被强制重启。
      现在：字体存独立 'fonts' 集合（settings 彻底瘦身），
      启动时自动迁移旧记录并删除，旧 coset 字体同样收编后清空原字段。 */
-  let FONTLIB = [];       // [{id, name, b64, at}]
+  /* 5.6：字体大文件改走媒体库 media.put（Blob 落盘，单件上限 25MB），
+     db（fonts 集合）里只存 {id,name,ref,size} 引用记录——彻底避开
+     「几十 MB base64 写 db 压垮宿主」。加载时 media.get 换回 base64 注入。
+     媒体库不可用时回退：小于 8MB 的字体仍可走 db 存 b64。 */
+  let FONTLIB = [];       // [{id, name, ref?, b64?, size, at}]（ref 与 b64 至少有其一）
+  const fontB64Cache = new Map();
   let fontlibLoaded = false;
 
+  async function getFontB64(f) {
+    if (f.b64) return f.b64;
+    if (fontB64Cache.has(f.id)) return fontB64Cache.get(f.id);
+    if (f.ref && window.AiPhone.media && window.AiPhone.media.get) {
+      try {
+        const r = await window.AiPhone.media.get({ ref: f.ref });
+        const d = String((r && r.dataUrl) || '');
+        const b64 = d.split(',')[1] || '';
+        fontB64Cache.set(f.id, b64);
+        return b64;
+      } catch (e) { console.warn('[深读] 字体读取失败', f.name, e); }
+    }
+    return '';
+  }
   async function loadFontLib() {
     try {
       const rows = await window.AiPhone.db.list('fonts', { limit: 100 });
-      FONTLIB = (rows || []).map(r => r.data).filter(f => f && f.id && f.b64);
+      FONTLIB = (rows || []).map(r => r.data).filter(f => f && f.id && (f.b64 || f.ref));
     } catch (e) { FONTLIB = []; }
-    /* 迁移①：旧版 settings:fontlib 记录（可能高达数十 MB）→ fonts 集合，然后删除旧记录 */
+    /* 迁移：旧版 settings:fontlib / settings:coread 里的巨型 base64 → 媒体库，然后清除旧记录 */
     try {
       const srows = await window.AiPhone.db.list('settings', { limit: 1000 });
       const norm = (srows || []).map(x => (x && typeof x === 'object' && 'data' in x && x.data && typeof x.data === 'object') ? { rid: x.id, data: x.data } : { rid: (x && x.id) || null, data: x });
       const legacy = norm.find(r => r.data && r.data.id === 'fontlib');
       if (legacy && Array.isArray(legacy.data.fonts) && legacy.data.fonts.length) {
         for (const f of legacy.data.fonts) {
-          if (f && f.b64 && !FONTLIB.some(x => x.name === f.name)) FONTLIB.push(f);
+          if (f && f.b64 && !FONTLIB.some(x => x.name === f.name)) {
+            const ref = await putFont(f.b64);
+            FONTLIB.push({ id: f.id || ('font_' + uid9()), name: f.name || '导入的字体', ref, b64: ref ? undefined : f.b64, size: f.b64.length, at: f.at || Date.now() });
+          }
         }
         await window.AiPhone.db.delete('settings', legacy.rid);
         await persistFontLib();
       }
-      /* 迁移②：旧 coset 里导入的字体收编进库，并清空 coread 记录里的巨型 base64 */
       const coread = norm.find(r => r.data && r.data.id === 'coread');
       if (coread && coread.data.rdrFontB64) {
         if (!FONTLIB.some(f => f.name === coread.data.rdrFontName)) {
-          FONTLIB.push({ id: 'font_' + uid9(), name: coread.data.rdrFontName || '导入的字体', b64: coread.data.rdrFontB64, at: Date.now() });
+          const ref = await putFont(coread.data.rdrFontB64);
+          FONTLIB.push({ id: 'font_' + uid9(), name: coread.data.rdrFontName || '导入的字体', ref, b64: ref ? undefined : coread.data.rdrFontB64, size: coread.data.rdrFontB64.length, at: Date.now() });
           await persistFontLib();
         }
         coread.data.rdrFontB64 = ''; coread.data.rdrFontName = '';
@@ -181,12 +203,26 @@
     fontlibLoaded = true;
     injectFontFaces();
   }
-  /* 把字体库整体落为 fonts 集合的独立记录（删除已移除的） */
+  async function putFont(b64) {
+    try {
+      const r = await window.AiPhone.media.put({ dataUrl: 'data:font/ttf;base64,' + b64 });
+      if (r && r.ref) return r.ref;
+    } catch (e) { console.warn('[深读] media.put 失败', e); }
+    return null;
+  }
+  /* 增删字体：有引用走媒体库删除；记录按单条增删，不触碰 settings */
   async function persistFontLib() {
     try {
       const rows = await window.AiPhone.db.list('fonts', { limit: 100 });
       const keep = new Set(FONTLIB.map(f => f.id));
-      for (const r of rows) { if (r.data && r.data.id && !keep.has(r.data.id)) await window.AiPhone.db.delete('fonts', r.id); }
+      for (const r of rows) {
+        if (r.data && r.data.id && !keep.has(r.data.id)) {
+          if (r.data.ref && window.AiPhone.media && window.AiPhone.media.delete) {
+            try { await window.AiPhone.media.delete({ ref: r.data.ref }); } catch (e) {}
+          }
+          await window.AiPhone.db.delete('fonts', r.id);
+        }
+      }
       for (const f of FONTLIB) {
         const found = rows.find(r => r.data && r.data.id === f.id);
         if (found) await window.AiPhone.db.update('fonts', found.id, f);
@@ -194,17 +230,24 @@
       }
     } catch (e) { console.warn('[深读] 字体库保存失败', e); }
   }
-  /* 为库中每个字体注入 @font-face（字体族名用 id，避免重名冲突） */
-  function injectFontFaces() {
+  /* 为库中每个字体注入 @font-face（异步：引用需先换回 base64） */
+  let _faceSeq = 0;
+  async function injectFontFaces() {
+    const seq = ++_faceSeq;
     let st = document.getElementById('arFontFaces');
     if (!st) { st = document.createElement('style'); st.id = 'arFontFaces'; document.head.appendChild(st); }
-    st.textContent = FONTLIB.map(f =>
-      `@font-face{font-family:'ARFont_${f.id}';src:url(data:font/ttf;base64,${f.b64});font-display:swap;}`
-    ).join('\n');
+    const parts = [];
+    for (const f of FONTLIB) {
+      const b64 = await getFontB64(f);
+      if (seq !== _faceSeq) return;
+      if (b64) parts.push(`@font-face{font-family:'ARFont_${f.id}';src:url(data:font/ttf;base64,${b64});font-display:swap;}`);
+    }
+    if (seq !== _faceSeq) return;
+    st.textContent = parts.join('\n');
   }
   function fontStack(v) {
     const f = FONTLIB.find(x => x.id === v);
-    if (f) return `'ARFont_${f.id}', var(--font-serif)`;
+    if (f) return `'ARFont_${f.id}', var(--font-serif), serif`;
     return 'var(--font-serif)';
   }
   function fontOptionsHtml(v) {
@@ -216,7 +259,7 @@
   function fontLibHtml() {
     return `<div class="ar-sec">字体库</div>
       <div class="field">
-        <label>导入字体文件（.ttf / .otf / .woff / .woff2，最大 30MB）</label>
+        <label>导入字体文件（.ttf / .otf / .woff / .woff2，最大 25MB）</label>
         <input type="file" id="arFontFile" accept=".ttf,.otf,.woff,.woff2">
         <div style="display:flex;gap:8px;margin-top:8px;">
           <button class="btn-c" id="arFontAdd" style="flex:1;padding:10px;border-radius:10px;font-size:12.5px;">导入到字体库</button>
@@ -229,7 +272,7 @@
     if (!list) return;
     if (!FONTLIB.length) { list.innerHTML = '<div class="ar-none">字体库是空的</div>'; return; }
     list.innerHTML = FONTLIB.map(f => `<div class="ar-tpl" data-fid="${escHTML(f.id)}">
-      <span class="nm">${escHTML(f.name)}<span style="font-size:10px;color:var(--ink-3);"> · ${(f.b64.length * 0.75 / 1048576).toFixed(1)}MB</span></span>
+      <span class="nm">${escHTML(f.name)}<span style="font-size:10px;color:var(--ink-3);"> · ${(((f.size || (f.b64 ? f.b64.length : 0))) * 0.75 / 1048576).toFixed(1)}MB</span></span>
       <button data-fact="del">删除</button>
     </div>`).join('');
     list.querySelectorAll('button[data-fact="del"]').forEach(b => b.addEventListener('click', async () => {
@@ -264,20 +307,41 @@
     addBtn.addEventListener('click', () => {
       const f = file.files && file.files[0];
       if (!f) { toast('先选择字体文件'); return; }
-      if (f.size > 30 * 1024 * 1024) { toast('字体过大，不超过 30MB'); return; }
+      if (f.size > 25 * 1024 * 1024) { toast('字体过大，媒体库上限 25MB'); return; }
+      addBtn.disabled = true;
+      toast('正在导入字体…');
       const r = new FileReader();
       r.onload = async () => {
-        const dataUrl = String(r.result || '');
-        const b64 = dataUrl.split(',')[1] || '';
-        if (!b64) { toast('字体读取失败'); return; }
-        FONTLIB.push({ id: 'font_' + uid9(), name: f.name, b64, at: Date.now() });
-        await persistFontLib();
-        injectFontFaces();
-        file.value = '';
-        renderFontLib(root);
-        toast('已导入「' + f.name + '」，可在下方正文字体/标题字体中选择');
+        try {
+          const dataUrl = String(r.result || '');
+          const b64 = dataUrl.split(',')[1] || '';
+          if (!b64) { toast('字体读取失败'); return; }
+          /* 5.6：大文件走媒体库 Blob 落盘；db 只存引用记录（几十字节） */
+          const ref = await putFont(b64);
+          const rec = {
+            id: 'font_' + uid9(), name: f.name,
+            ref: ref || undefined,
+            b64: ref ? undefined : (b64.length <= 8 * 1024 * 1024 ? b64 : undefined),
+            size: b64.length, at: Date.now(),
+          };
+          if (!rec.ref && !rec.b64) { toast('导入失败：媒体库不可用且字体超过 8MB'); return; }
+          FONTLIB.push(rec);
+          await persistFontLib();
+          fontB64Cache.set(rec.id, b64);
+          injectFontFaces();
+          file.value = '';
+          renderFontLib(root);
+          /* 立即刷新正文字体/标题字体下拉框，无需重开面板 */
+          root.querySelectorAll('.ar-select[data-fontk]').forEach(sel => {
+            const k = sel.dataset.fontk;
+            sel.innerHTML = fontOptionsHtml(draft.common[k]);
+          });
+          toast('已导入「' + f.name + '」，下方字体选择框可直接选用');
+        } finally {
+          addBtn.disabled = false;
+        }
       };
-      r.onerror = () => toast('字体读取失败');
+      r.onerror = () => { toast('字体读取失败'); addBtn.disabled = false; };
       r.readAsDataURL(f);
     });
     renderFontLib(root);
@@ -365,20 +429,10 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
     } catch (e) { console.warn('[深读] media.put 失败，回退 dataURL 存储', e); }
     return dataUrl;  // 兜底：媒体库不可用时维持旧行为
   }
-  /* 把 AR 里所有 data: 形式的图片换成引用（保存前调用，幂等） */
-  async function compactImages(rec) {
-    for (const m of ['light', 'dark']) {
-      const M = rec[m];
-      if (!M) continue;
-      for (const slot of [M.homeBg, M.hero, M.readerBg, M.jCover]) {
-        if (!slot) continue;
-        for (const k of ['img', 'u', 'q']) {
-          const v = slot[k];
-          if (typeof v === 'string' && v.startsWith('data:')) slot[k] = await putImg(v);
-        }
-      }
-    }
-  }
+  /* 5.6：图片已改为压缩后的 dataURL 直接存储（体积小），不再转引用。
+     此函数保留为空操作以兼容旧调用点；旧数据里的 media-store:// 引用
+     在 hydrateImages 换回后，下次保存会以 dataURL 形式落库。 */
+  async function compactImages(rec) { /* no-op since 5.6 */ }
   function hexA(c, a) {
     if (!c) return c;
     const s = String(c).trim();
@@ -507,10 +561,32 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
       </div>
       <div style="font-size:12px;color:var(--ink-3);margin-top:6px;">${escHTML(hint || '')}</div></div>`;
   }
+  /* 5.6：导入图片一律先压缩（最长边 1600px JPEG，约几百 KB），
+     压缩后的 dataURL 体积小，可直接持久化，不再依赖 media.put/get，
+     也不存在大记录压垮宿主的问题 */
   function readImgToDraft(file, target, cb) {
-    if (file.size > 2 * 1024 * 1024) { toast('图片过大，不超过 2MB'); return; }
+    if (file.size > 8 * 1024 * 1024) { toast('图片过大，不超过 8MB'); return; }
     const r = new FileReader();
-    r.onload = () => { target.img = String(r.result); cb && cb(); };
+    r.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const MAX = 1600;
+          const ratio = Math.min(1, MAX / Math.max(img.width, img.height));
+          const w = Math.max(1, Math.round(img.width * ratio));
+          const h = Math.max(1, Math.round(img.height * ratio));
+          const cv = document.createElement('canvas');
+          cv.width = w; cv.height = h;
+          cv.getContext('2d').drawImage(img, 0, 0, w, h);
+          target.img = cv.toDataURL('image/jpeg', 0.85);
+        } catch (e) {
+          target.img = String(r.result);  // 压缩失败用原图
+        }
+        cb && cb();
+      };
+      img.onerror = () => { toast('图片读取失败'); };
+      img.src = String(r.result);
+    };
     r.onerror = () => toast('图片读取失败');
     r.readAsDataURL(file);
   }
