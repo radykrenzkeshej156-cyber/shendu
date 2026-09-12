@@ -123,36 +123,57 @@
     } catch (e) { console.warn('[深读] 外观保存失败', e); }
   }
 
-  /* ───────── 字体库（5.2：导入 ≤30MB / 列表 / 删除，存 settings:fontlib） ───────── */
-  const FONTLIB_KEY = 'fontlib';
+  /* ───────── 字体库（5.4：独立 fonts 集合，一条字体一条记录） ─────────
+     5.3 仍重启的根因：字体以数十 MB base64 存在 settings 集合里，
+     而 App 每次保存都会 db.list('settings') 全量读集合 —— 每保存一次
+     就要解析一次巨型记录，宿主内存压力过大被强制重启。
+     现在：字体存独立 'fonts' 集合（settings 彻底瘦身），
+     启动时自动迁移旧记录并删除，旧 coset 字体同样收编后清空原字段。 */
   let FONTLIB = [];       // [{id, name, b64, at}]
   let fontlibLoaded = false;
 
   async function loadFontLib() {
     try {
-      const rows = await window.AiPhone.db.list('settings', { limit: 1000 });
-      const norm = (rows || []).map(x => (x && typeof x === 'object' && 'data' in x && x.data && typeof x.data === 'object') ? x.data : x);
-      const rec = norm.find(x => x && x.id === FONTLIB_KEY);
-      FONTLIB = (rec && Array.isArray(rec.fonts)) ? rec.fonts : [];
-      /* 5.2 迁移：把旧版存在 coset 里的导入字体收编进字体库 */
-      try {
-        if (S.coset && S.coset.rdrFontB64 && S.coset.rdrFontName && !FONTLIB.some(f => f.name === S.coset.rdrFontName)) {
-          FONTLIB.push({ id: 'font_' + uid9(), name: S.coset.rdrFontName, b64: S.coset.rdrFontB64, at: Date.now() });
-          await saveFontLib();
-        }
-      } catch (e) {}
+      const rows = await window.AiPhone.db.list('fonts', { limit: 100 });
+      FONTLIB = (rows || []).map(r => r.data).filter(f => f && f.id && f.b64);
     } catch (e) { FONTLIB = []; }
+    /* 迁移①：旧版 settings:fontlib 记录（可能高达数十 MB）→ fonts 集合，然后删除旧记录 */
+    try {
+      const srows = await window.AiPhone.db.list('settings', { limit: 1000 });
+      const norm = (srows || []).map(x => (x && typeof x === 'object' && 'data' in x && x.data && typeof x.data === 'object') ? { rid: x.id, data: x.data } : { rid: (x && x.id) || null, data: x });
+      const legacy = norm.find(r => r.data && r.data.id === 'fontlib');
+      if (legacy && Array.isArray(legacy.data.fonts) && legacy.data.fonts.length) {
+        for (const f of legacy.data.fonts) {
+          if (f && f.b64 && !FONTLIB.some(x => x.name === f.name)) FONTLIB.push(f);
+        }
+        await window.AiPhone.db.delete('settings', legacy.rid);
+        await persistFontLib();
+      }
+      /* 迁移②：旧 coset 里导入的字体收编进库，并清空 coread 记录里的巨型 base64 */
+      const coread = norm.find(r => r.data && r.data.id === 'coread');
+      if (coread && coread.data.rdrFontB64) {
+        if (!FONTLIB.some(f => f.name === coread.data.rdrFontName)) {
+          FONTLIB.push({ id: 'font_' + uid9(), name: coread.data.rdrFontName || '导入的字体', b64: coread.data.rdrFontB64, at: Date.now() });
+          await persistFontLib();
+        }
+        coread.data.rdrFontB64 = ''; coread.data.rdrFontName = '';
+        await window.AiPhone.db.update('settings', coread.rid, coread.data);
+      }
+    } catch (e) { console.warn('[深读] 字体库迁移失败', e); }
     fontlibLoaded = true;
     injectFontFaces();
   }
-  async function saveFontLib() {
+  /* 把字体库整体落为 fonts 集合的独立记录（删除已移除的） */
+  async function persistFontLib() {
     try {
-      const rows = await window.AiPhone.db.list('settings', { limit: 1000 });
-      const norm = (rows || []).map(x => (x && typeof x === 'object' && 'data' in x && x.data && typeof x.data === 'object') ? { rid: x.id, data: x.data } : { rid: (x && x.id) || null, data: x });
-      const rec = { id: FONTLIB_KEY, fonts: FONTLIB };
-      const found = norm.find(r => r.data && r.data.id === FONTLIB_KEY);
-      if (found && found.rid) await window.AiPhone.db.update('settings', found.rid, rec);
-      else await window.AiPhone.db.create('settings', rec);
+      const rows = await window.AiPhone.db.list('fonts', { limit: 100 });
+      const keep = new Set(FONTLIB.map(f => f.id));
+      for (const r of rows) { if (r.data && r.data.id && !keep.has(r.data.id)) await window.AiPhone.db.delete('fonts', r.id); }
+      for (const f of FONTLIB) {
+        const found = rows.find(r => r.data && r.data.id === f.id);
+        if (found) await window.AiPhone.db.update('fonts', found.id, f);
+        else await window.AiPhone.db.create('fonts', f);
+      }
     } catch (e) { console.warn('[深读] 字体库保存失败', e); }
   }
   /* 为库中每个字体注入 @font-face（字体族名用 id，避免重名冲突） */
@@ -199,7 +220,7 @@
       const ok = await uiConfirm('删除字体', '删除「' + (f ? f.name : '') + '」？正在使用它的排版会回退为默认衬线。', '删除');
       if (!ok) return;
       FONTLIB = FONTLIB.filter(x => x.id !== fid);
-      await saveFontLib();
+      await persistFontLib();
       injectFontFaces();
       /* 已选中的字体被删则回退默认 */
       for (const k of ['bodyFont', 'titleFont']) {
@@ -232,7 +253,7 @@
         const b64 = dataUrl.split(',')[1] || '';
         if (!b64) { toast('字体读取失败'); return; }
         FONTLIB.push({ id: 'font_' + uid9(), name: f.name, b64, at: Date.now() });
-        await saveFontLib();
+        await persistFontLib();
         injectFontFaces();
         file.value = '';
         renderFontLib(root);
