@@ -857,7 +857,7 @@ function chapterSummaryCardHtml(ch) {
       ${hasSummary ? `<div class="cs-text">${mdToHtml(ch.summary)}</div>
         ${concepts.length ? `<div class="cs-concepts"><b>本章概念：</b>${concepts.map(c => `<span class="cs-concept" data-cid="${esc(c.id)}">${esc(c.term)}</span>`).join('')}</div>` : ''}
         <div class="cs-actions"><button class="cs-btn" data-refresh="1">重新生成</button><button class="cs-btn cs-fold">收起</button></div>`
-        : `<div class="cs-empty">进入本章时自动生成精炼，供共读时快速定位本章内容。</div>
+        : `<div class="cs-empty">精炼不会自动生成；需要时点下方按钮，生成后供共读快速定位本章内容。</div>
         <div class="cs-actions"><button class="cs-btn" data-gen="1">生成章节精炼</button></div>`}
     </div>
   </div>`;
