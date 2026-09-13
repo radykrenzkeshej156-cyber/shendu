@@ -287,6 +287,46 @@ async function saveCoreadSettings() {
   await upsert('settings', Object.assign({}, coreadSettingsRec()));
 }
 
+/* ───────── 聊天联动（5.7.1 方案A） ─────────
+   把「正在读什么、聊到哪」同步为 TA 短期记忆事件流里的**一条**事件：
+   固定 appEventId=deepread_status，重复同步先删后写 = 覆盖，不会累积刷屏；
+   可随时一键清除。角色在聊天生成时经短期记忆事件流自然读到。 */
+async function syncReadingStatus(extraNote) {
+  if (!S.companionId) { const ok = await ensureCompanion(); if (!ok) return false; }
+  const b = S.rBook;
+  let summary = '';
+  if (b && S.rChapter) {
+    const pct = totalParas(b) ? Math.round(Math.min(100, ((S.rParaCur || 0) + 1) / totalParas(b) * 100)) : 0;
+    summary = `${b.title}${b.author ? ' · ' + b.author : ''}，读到「${S.rChapter.title}」（约 ${pct}%）`;
+  } else if (b) {
+    summary = `${b.title}，上次阅读「${bookCurrentChapterTitle(b) || '未开始'}」`;
+  } else {
+    summary = '正在用深读读书，还没有开始具体的书';
+  }
+  if (extraNote) summary += '。刚才共读讨论：' + String(extraNote).slice(0, 160);
+  try {
+    try { await A.memory.deleteTimeline({ characterId: S.companionId, appEventId: 'deepread_status' }); } catch (e) {}
+    await A.memory.addTimeline({
+      characterId: S.companionId, appLabel: '深读',
+      appEventId: 'deepread_status', detail: 'reading_status',
+      summary: '【深读·阅读近况】' + summary,
+      data: { book: b ? b.title : '', chapter: S.rChapter ? S.rChapter.title : '', note: extraNote || '' },
+    });
+    toast('已同步近况给 TA');
+    return true;
+  } catch (e) {
+    toast('同步失败：' + ((e && e.message) || e));
+    return false;
+  }
+}
+async function clearReadingStatus() {
+  if (!S.companionId) { toast('还没有共读伙伴'); return; }
+  try {
+    await A.memory.deleteTimeline({ characterId: S.companionId, appEventId: 'deepread_status' });
+    toast('已清除同步的近况');
+  } catch (e) { toast('清除失败：' + ((e && e.message) || e)); }
+}
+
 /* ───────── 章节切分 ───────── */
 const CHAPTER_RE = /^(第[\d一二三四五六七八九十百千万零〇两]+[章节回卷篇部]|序章|序言|尾声|终章|引子|楔子|后记|跋|附录|Chapter\s+\d+|#+\s+|第[\d一二三四五六七八九十百千万零〇两]+章[:\s])/i;
 function splitBook(content) {
@@ -306,7 +346,20 @@ function splitBook(content) {
   }
   if (cur) chapters.push(cur);
   if (!chapters.length) chapters.push({ title: '开篇', lines: rawLines });
-  return chapters.filter(c => c.lines.some(l => l.trim())).map(c => ({
+  /* 5.7.1 修复目录乱序：TXT 书开头的「目录区」每一行都像章节标题，
+     会造出一批内容只有一两行（页码/省略号）的假章，与真章混排导致
+     目录显示成「十四、十三、九…」。规则：同名章节在后面再次出现，
+     且前面这条几乎没内容 → 判定为目录残留，丢弃。 */
+  const normToc = (t) => String(t).replace(/[\s.·。・‥…\-—\d]/g, '').slice(0, 14);
+  const lastIndex = {};
+  chapters.forEach((c, i) => { lastIndex[normToc(c.title)] = i; });
+  const cleaned = chapters.filter((c, i) => {
+    const k = normToc(c.title);
+    const body = c.lines.filter(l => l.trim() && !/^[\d.·。\-—s]{1,12}$/i.test(l.trim())).length;
+    if (body <= 2 && lastIndex[k] > i) return false;
+    return true;
+  });
+  return (cleaned.length ? cleaned : chapters).filter(c => c.lines.some(l => l.trim())).map(c => ({
     title: c.title || '开篇',
     text: c.lines.join('\n').replace(/\n{3,}/g, '\n\n'),
   }));
@@ -2261,6 +2314,13 @@ $id('coSaveQ').addEventListener('click', () => {
   openQuestionSheet({ bookId: S.rBook.id, chapterId: S.rChapter.id, paraNum: S.rParaCur, quote: S.coSession ? S.coSession.quote : '' });
 });
 $id('coSess').addEventListener('click', openSessionList);
+/* 5.7.1：共读中一键「告诉TA」——带上最近一句 AI 回复作为讨论摘要 */
+$id('coTell').addEventListener('click', async () => {
+  const msgs = S.coSession && S.coSession.msgs ? S.coSession.msgs : [];
+  const lastAI = [...msgs].reverse().find(m => m.role !== 'user');
+  const note = lastAI ? String(lastAI.text || '').slice(0, 160) : (S.coSession ? S.coSession.topic : '');
+  await syncReadingStatus(note);
+});
 /* 本次共读上下文查看入口：透明展示这一轮 AI 实际看到了什么 */
 $id('coCtx').addEventListener('click', openCtxView);
 function openCtxView() {
@@ -3461,11 +3521,19 @@ function openCoreadSettings() {
       ${ctxLog.origLen === 0 ? '<span style="color:var(--ink-3);">开始一次共读后会自动记录</span>' : ''}
     </div>`;
 
+  const linkHtml = `聊天联动 · 让 TA 知道你在读什么
+    <div style="font-size:12px;color:var(--ink-3);line-height:1.7;margin:6px 0 10px;">同步后，TA 在聊天里能知道你正在深读哪本书、读到哪一章、讨论了什么。只占用 TA 短期记忆里的<b>一条</b>事件：再次同步会覆盖，随时可清除。</div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn-p" id="csSyncStatus" style="flex:1;padding:10px;border-radius:11px;font-size:13px;">同步当前近况给 TA</button>
+      <button class="btn-c" id="csClearStatus" style="flex:1;padding:10px;border-radius:11px;font-size:13px;">清除已同步的近况</button>
+    </div>`;
+
   openSheet({
     title: '共读设置',
     html: `<div class="setting-section">${ctxHtml}</div>
       <div class="setting-section" style="margin-top:18px;">${recallHtml}</div>
       <div class="setting-section" style="margin-top:18px;">${memHtml}</div>
+      <div class="setting-section" style="margin-top:18px;">${linkHtml}</div>
       <div class="btn-row"><button class="btn-c" id="csCancel">取消</button><button class="btn-p" id="csSave">保存</button></div>
       <div class="setting-section" style="margin-top:18px;padding-top:14px;border-top:1px dashed var(--line);">
         <div class="section-label">本次共读 AI 看到的上下文</div>
@@ -3501,6 +3569,9 @@ function openCoreadSettings() {
         coset.recall[key] = val;
       }));
       root.querySelector('#csCancel').addEventListener('click', closeTopSheet);
+      /* 5.7.1 聊天联动按钮 */
+      root.querySelector('#csSyncStatus').addEventListener('click', () => syncReadingStatus(''));
+      root.querySelector('#csClearStatus').addEventListener('click', clearReadingStatus);
       /* 5.0：阅读器排版相关绑定已移除（字号/字体统一在「外观 → 通用」） */
       /* 小模型连接测试：用当前输入框里的配置 ID 发一条极短消息，验证能否连通 */
       root.querySelector('#smallApiTest').addEventListener('click', async () => {

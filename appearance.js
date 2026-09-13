@@ -62,16 +62,14 @@
   /* 5.5：加载外观时把 media-store:// 引用换回 dataURL 存入内存副本，
      保证面板预览和样式渲染直接可用；保存时 compactImages 再转回引用。
      （此前引用换不回图片 = 面板显示空 = 看起来像被重置） */
+  /* 加载后：把 '#id' 引用换回 dataURL 放内存（渲染/面板预览直接用），
+     同时把原 id 记在 _id_<k>，保存时 compact 复用同一记录 update。 */
   async function hydrateImages(rec) {
-    for (const m of ['light', 'dark']) {
-      const M = rec[m];
-      if (!M) continue;
-      if (M.homeBg) M.homeBg.img = await resolveImg(M.homeBg.img);
-      if (M.hero) { M.hero.img = await resolveImg(M.hero.img); M.hero.src = await resolveImg(M.hero.src); }
-      if (M.readerBg) M.readerBg.img = await resolveImg(M.readerBg.img);
-      if (M.jCover) {
-        M.jCover.u = await resolveImg(M.jCover.u);
-        M.jCover.q = await resolveImg(M.jCover.q);
+    for (const s of allImgSlots(rec)) {
+      const v = s.o[s.k];
+      if (typeof v === 'string' && v.charAt(0) === '#') {
+        s.o['_id_' + s.k] = v.slice(1);
+        s.o[s.k] = await resolveImg(v);
       }
     }
     return rec;
@@ -133,6 +131,9 @@
   async function saveAppearance() {
     if (!AR) return false;
     AR.id = KEY; AR.v = 2; AR.updAt = Date.now();
+    /* 5.7.1：入库前必过 compactImages —— 内存副本里是 dataURL（供渲染），
+       但写库的副本必须全部换成 '#id' 引用，settings 记录只留几 KB */
+    try { await compactImages(AR); } catch (e) {}
     try {
       const rows = await window.AiPhone.db.list('settings', { limit: 1000 });
       const norm = (rows || []).map(x => (x && typeof x === 'object' && 'data' in x && x.data && typeof x.data === 'object') ? { rid: x.id, data: x.data } : { rid: (x && x.id) || null, data: x });
@@ -461,34 +462,92 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
     ensureReaderBgLayer();
     injectHero();
   }
-  /* ───────── 媒体引用（5.3 性能修复核心） ─────────
-     此前主页背景/主图/阅读背景/手帐封面全以 base64 dataURL 存进 settings 记录，
-     每次保存都要整体序列化几 MB，宿主内存压力过大而被重启。
-     现改为：保存时 dataURL → media.put 换成 media-store:// 引用（Blob 落盘），
-     显示时 media.get 换回 dataURL（带内存缓存）。 */
+  /* ───────── 图片存储（5.7.1：独立 arimgs 集合，一条一图） ─────────
+     「保存生效、重启消失」的根治：settings:appearance 记录里不再内嵌
+     任何图片 dataURL，只存 '#<id>' 引用；图片本体一张一条写进 arimgs
+     集合（每条几百 KB）。巨型记录混在小设置集合里，iOS 重启后整体
+     list 读回失败 → 回退默认 → 图片"消失"。
+     兼容旧值：'data:…'（内嵌时代）与 'media-store://…'（媒体库时代）。 */
   const mediaCache = new Map();
+  const arimgIds = new Map();   // 'img_xxx' → 宿主记录 rid
+  async function arimgFindRid(id) {
+    if (arimgIds.has(id)) return arimgIds.get(id);
+    const rows = rowList(await window.AiPhone.db.list('arimgs', { limit: 300 }));
+    const hit = rows.find(r => r.data && r.data.id === id);
+    if (hit && hit.rid) { arimgIds.set(id, hit.rid); return hit.rid; }
+    return null;
+  }
   async function resolveImg(src) {
-    if (!src) return '';
-    if (!src.startsWith('media-store://')) return src;
+    if (!src || typeof src !== 'string') return '';
+    if (src.charAt(0) !== '#') {
+      if (src.startsWith('media-store://')) {
+        if (mediaCache.has(src)) return mediaCache.get(src);
+        try {
+          const r = await window.AiPhone.media.get({ ref: src });
+          const d = (r && r.dataUrl) || '';
+          if (d) mediaCache.set(src, d);
+          return d || src;
+        } catch (e) { return src; }
+      }
+      return src;  // data:… 原样可用
+    }
     if (mediaCache.has(src)) return mediaCache.get(src);
     try {
-      const r = await window.AiPhone.media.get({ ref: src });
-      const d = (r && r.dataUrl) || '';
+      const rid = await arimgFindRid(src.slice(1));
+      if (!rid) return src;  // 找不到记录：保留引用，下次保存不至于丢数据
+      const rec = await window.AiPhone.db.get('arimgs', rid);
+      const d = (rec && ((rec.data && rec.data.d) || rec.d)) || '';
+      if (!d) return src;
       mediaCache.set(src, d);
       return d;
-    } catch (e) { return src; }  /* 换不回时保留原引用，至少下次保存不会把数据弄丢 */
+    } catch (e) { return src; }
   }
   async function putImg(dataUrl) {
+    const id = 'img_' + uid9();
     try {
-      const r = await window.AiPhone.media.put({ dataUrl });
-      if (r && r.ref) { mediaCache.set(r.ref, dataUrl); return r.ref; }
-    } catch (e) { console.warn('[深读] media.put 失败，回退 dataURL 存储', e); }
-    return dataUrl;  // 兜底：媒体库不可用时维持旧行为
+      const created = await window.AiPhone.db.create('arimgs', { id, d: dataUrl });
+      const rid = (created && created.id) || null;
+      if (rid) { arimgIds.set(id, rid); mediaCache.set('#' + id, dataUrl); return '#' + id; }
+    } catch (e) { console.warn('[深读] arimgs 写入失败，回退内嵌', e); }
+    return dataUrl;  // 兜底：写入失败仍内嵌，功能不中断
   }
-  /* 5.6：图片已改为压缩后的 dataURL 直接存储（体积小），不再转引用。
-     此函数保留为空操作以兼容旧调用点；旧数据里的 media-store:// 引用
-     在 hydrateImages 换回后，下次保存会以 dataURL 形式落库。 */
-  async function compactImages(rec) { /* no-op since 5.6 */ }
+  function modeSlots(M) {
+    const out = [];
+    if (!M) return out;
+    if (M.homeBg) out.push({ o: M.homeBg, k: 'img' });
+    if (M.hero) { out.push({ o: M.hero, k: 'src' }, { o: M.hero, k: 'img' }); }
+    if (M.readerBg) out.push({ o: M.readerBg, k: 'img' });
+    if (M.jCover) { out.push({ o: M.jCover, k: 'u' }, { o: M.jCover, k: 'q' }); }
+    return out;
+  }
+  function allImgSlots(rec) {
+    if (!rec) return [];
+    let out = [];
+    for (const m of ['light', 'dark']) out = out.concat(modeSlots(rec[m]));
+    if (Array.isArray(rec.templates)) for (const t of rec.templates) out = out.concat(modeSlots(t.light), modeSlots(t.dark));
+    return out;
+  }
+  /* 保存前：内存里的 dataURL 全部落成 arimgs 记录，槽位换成 '#id'。
+     同槽位复用原记录 id（hydrate 时记在 _id_<k>），update 不产生孤儿。 */
+  async function compactImages(rec) {
+    for (const s of allImgSlots(rec)) {
+      const v = s.o[s.k];
+      if (typeof v !== 'string' || !v.startsWith('data:')) continue;
+      const knownId = s.o['_id_' + s.k];
+      if (knownId) {
+        try {
+          const rid = await arimgFindRid(knownId);
+          if (rid) {
+            await window.AiPhone.db.update('arimgs', rid, { id: knownId, d: v });
+            mediaCache.set('#' + knownId, v);
+            s.o[s.k] = '#' + knownId;
+            continue;
+          }
+        } catch (e) {}
+      }
+      s.o[s.k] = await putImg(v);
+    }
+  }
   function hexA(c, a) {
     if (!c) return c;
     const s = String(c).trim();
@@ -537,6 +596,9 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
       const fig = document.createElement('div');
       fig.className = 'ar-hero';
       fig._arHeroSrc = src;
+      /* 5.7.1：卡片比例跟随裁剪比例（横向条幅），未裁剪保持默认 16:9 */
+      const cropNow = (AR && AR[document.body.getAttribute('data-theme') === 'night' ? 'dark' : 'light'].hero.crop) || '';
+      if (cropNow === '3:1' || cropNow === '4:1' || cropNow === '5:1') fig.style.aspectRatio = cropNow.replace(':', ' / ');
       fig.innerHTML = `<img src="${escHTML(src)}" alt="">`;
       const head = body.querySelector('.h-row');
       if (head && head.nextElementSibling) body.insertBefore(fig, head.nextElementSibling);
@@ -648,17 +710,18 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
     r.onerror = () => toast('图片读取失败');
     r.readAsDataURL(file);
   }
-  /* 5.7：主图裁剪——从原图 hero.src 按 crop（''=不裁剪 / 1:3 / 1:4 / 1:5）
-     居中裁出显示图 hero.img；cb(dataUrl) 异步回传结果 */
+  /* 5.7.1：主图裁剪——crop 为横向比例（3:1/4:1/5:1，宽:高）与 ''=不裁剪；
+     从原图 hero.src 居中裁出显示图 hero.img */
   function cropToRatio(src, crop, cb) {
-    const ratio = crop === '1:3' ? 3 : crop === '1:4' ? 4 : crop === '1:5' ? 5 : 0;
+    const ratio = crop === '3:1' ? 3 : crop === '4:1' ? 4 : crop === '5:1' ? 5 : 0;
     if (!src || !ratio) { cb(src || ''); return; }
     const im = new Image();
     im.onload = () => {
       try {
         const w = im.naturalWidth, h = im.naturalHeight;
-        let cw = w, ch = Math.round(w * ratio);
-        if (ch > h) { ch = h; cw = Math.round(h / ratio); }
+        /* 横向图：高固定取原图高，宽 = 高 × 比例；超宽则反向缩 */
+        let ch = h, cw = Math.round(h * ratio);
+        if (cw > w) { cw = w; ch = Math.round(w / ratio); }
         const sx = Math.round((w - cw) / 2), sy = Math.round((h - ch) / 2);
         const cv = document.createElement('canvas');
         cv.width = cw; cv.height = ch;
@@ -772,7 +835,7 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
       <div data-bgsec="hero">
         <div class="ar-sec">主页主图</div>
         ${imgRow('主页主图', '主页顶部独立展示的图片卡片，更换后可下方选择裁剪比例')}
-        ${segRow('裁剪比例', 'crop', draft[which].hero, [{ v: '', l: '不裁剪' }, { v: '1:3', l: '1:3' }, { v: '1:4', l: '1:4' }, { v: '1:5', l: '1:5' }])}
+        ${segRow('裁剪比例', 'crop', draft[which].hero, [{ v: '', l: '不裁剪' }, { v: '3:1', l: '3:1' }, { v: '4:1', l: '4:1' }, { v: '5:1', l: '5:1' }])}
       </div>
       <div data-bgsec="rdbg">
         <div class="ar-sec">阅读背景</div>
@@ -810,7 +873,7 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
         <button data-t="common">通用</button>
         <button data-t="light">浅色</button>
         <button data-t="dark">深色</button>
-        <span style="flex-shrink:0;font-size:10px;color:var(--ink-3);align-self:center;margin-left:auto;">代码 v5.7</span>
+        <span style="flex-shrink:0;font-size:10px;color:var(--ink-3);align-self:center;margin-left:auto;">代码 v5.7.1</span>
       </div>
       <div id="arSub" style="display:none;">
         <div class="ar-tabs" id="arSubTabs">
@@ -1077,6 +1140,17 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
     reload: loadAppearance,
     get: () => AR,
   };
-  loadAppearance();
-  loadFontLib();
+  /* 5.7.1：启动读取兜底重试 —— iOS 重启后 DB 桥可能首帧未就绪，
+     读空会误回落默认（表现为「重启后设置/图片/字体消失」）。
+     若首次没读到 appearance 记录，延迟再读一次。 */
+  async function bootLoad() {
+    await Promise.all([loadAppearance(), loadFontLib()]);
+    let missing = true;
+    try {
+      const rows = await window.AiPhone.db.list('settings', { limit: 1000 });
+      missing = !rowList(rows).some(r => r.data && r.data.id === KEY);
+    } catch (e) { missing = true; }
+    if (missing) setTimeout(() => { loadAppearance(); loadFontLib(); }, 900);
+  }
+  bootLoad();
 })();
