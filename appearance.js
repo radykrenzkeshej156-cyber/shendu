@@ -69,7 +69,10 @@
       const v = s.o[s.k];
       if (typeof v === 'string' && v.charAt(0) === '#') {
         s.o['_id_' + s.k] = v.slice(1);
-        s.o[s.k] = await resolveImg(v);
+        const d = await resolveImg(v);
+        /* 5.7.2：解析成功才替换；失败保留 '#id' 引用（数据不丢，
+           显示端统一有守卫，绝不把引用塞进 <img> 变成问号） */
+        if (d) s.o[s.k] = d;
       }
     }
     return rec;
@@ -93,6 +96,11 @@
           ((s.accent || s.bg || s.ink) ? Object.assign({}, COLOR_DEF[m], s) : {}));
         if (s.homeBg && typeof s.homeBg === 'object') out[m].homeBg = Object.assign(out[m].homeBg, s.homeBg);
         if (s.hero && typeof s.hero === 'object') out[m].hero = Object.assign(out[m].hero, s.hero);
+        /* 5.7.2 根因修复：mergeDef 此前漏拷贝 5.x 的 readerBg
+           （只兼容了 4.9 的 s.reader），导致每次重启加载时
+           阅读背景（图/色/填充/透明度）被整体丢回默认——
+           「阅读器背景重启消失」就是这里，不是存储问题 */
+        if (s.readerBg && typeof s.readerBg === 'object') out[m].readerBg = Object.assign(out[m].readerBg, s.readerBg);
         /* 4.9 迁移：旧 reader.bgImg/bgColor → readerBg */
         const r = s.reader || {};
         if (r.bgImg) out[m].readerBg.img = r.bgImg;
@@ -131,9 +139,22 @@
   async function saveAppearance() {
     if (!AR) return false;
     AR.id = KEY; AR.v = 2; AR.updAt = Date.now();
-    /* 5.7.1：入库前必过 compactImages —— 内存副本里是 dataURL（供渲染），
-       但写库的副本必须全部换成 '#id' 引用，settings 记录只留几 KB */
-    try { await compactImages(AR); } catch (e) {}
+    /* 5.7.2 形态统一：内存（AR/draft）永远是 dataURL —— 渲染/预览/主图注入
+       直接可用；只有「写库的克隆副本」才 compact 成 '#id' 引用。
+       之前 compact 就地改写 AR 导致主图注入把引用塞进 <img>（纯白/问号）、
+       面板预览拿引用当地址（问号），是同一根因。 */
+    let rec = AR;
+    try {
+      rec = arClone(AR);
+      await compactImages(rec);
+      /* 把克隆上生成的 arimgs 记录 id 回写内存 AR（_id_xxx），
+         下次保存走 update 复用同一条记录，不堆积孤儿 */
+      const src = allImgSlots(AR), dst = allImgSlots(rec);
+      for (let i = 0; i < dst.length; i++) {
+        const k = dst[i].k;
+        if (src[i] && dst[i].o['_id_' + k]) src[i].o['_id_' + k] = dst[i].o['_id_' + k];
+      }
+    } catch (e) { rec = AR; }
     try {
       const rows = await window.AiPhone.db.list('settings', { limit: 1000 });
       const norm = (rows || []).map(x => (x && typeof x === 'object' && 'data' in x && x.data && typeof x.data === 'object') ? { rid: x.id, data: x.data } : { rid: (x && x.id) || null, data: x });
@@ -142,8 +163,8 @@
          若不是同一条就会出现「当场生效、重启丢失」的分裂现象 */
       const matches = norm.filter(r => r.data && r.data.id === KEY);
       const target = matches[0];
-      if (target && target.rid) await window.AiPhone.db.update('settings', target.rid, AR);
-      else await window.AiPhone.db.create('settings', AR);
+      if (target && target.rid) await window.AiPhone.db.update('settings', target.rid, rec);
+      else await window.AiPhone.db.create('settings', rec);
       for (const dup of matches.slice(1)) {
         try { await window.AiPhone.db.delete('settings', dup.rid); } catch (e) {}
       }
@@ -221,10 +242,33 @@
     });
   }
   async function loadFontLib() {
+    if (fontlibLoaded) return;  // 5.7.2：bootLoad 重试不再重复迁移/累积字体
+    let fontRows = [];
     try {
-      const rows = await window.AiPhone.db.list('fonts', { limit: 100 });
-      FONTLIB = rowList(rows).map(r => r.data).filter(f => f && f.id && (f.b64 || f.ref));
+      fontRows = rowList(await window.AiPhone.db.list('fonts', { limit: 100 }));
+      FONTLIB = fontRows.map(r => r.data).filter(f => f && f.id && (f.b64 || f.ref));
     } catch (e) { FONTLIB = []; }
+    /* 5.7.2 去重：历史上迁移可能累积出多条同名同图字体（重启反复收编），
+       按名称保留最早一条，其余连同其媒体引用一并从库中删除 */
+    try {
+      const byName = new Map();
+      const dupRows = [];
+      for (const r of fontRows) {
+        const d = r.data; if (!d || !d.id) continue;
+        const key = String(d.name || '');
+        if (!byName.has(key)) byName.set(key, r);
+        else dupRows.push(r);
+      }
+      if (dupRows.length) {
+        FONTLIB = Array.from(byName.values()).map(r => r.data).filter(f => f && f.id && (f.b64 || f.ref));
+        for (const r of dupRows) {
+          if (r.data.ref && window.AiPhone.media && window.AiPhone.media.delete) {
+            try { await window.AiPhone.media.delete({ ref: r.data.ref }); } catch (e) {}
+          }
+          try { await window.AiPhone.db.delete('fonts', r.rid); } catch (e) {}
+        }
+      }
+    } catch (e) {}
     /* 迁移：旧版 settings:fontlib / settings:coread 里的巨型 base64 → 媒体库，然后清除旧记录 */
     try {
       const srows = await window.AiPhone.db.list('settings', { limit: 1000 });
@@ -413,6 +457,11 @@
     if (seq !== _applySeq) return;  // 期间又有新的应用请求，放弃过期结果
     let st = document.getElementById('arStyle');
     if (!st) { st = document.createElement('style'); st.id = 'arStyle'; document.head.appendChild(st); }
+    /* 显示守卫：解析失败的引用（'#id'）本轮按「无图」渲染，
+       绝不把引用写进 CSS url()；数据仍在 AR 里，重启/重试可恢复 */
+    const okUrl = (v) => (typeof v === 'string' && v && v.charAt(0) !== '#') ? v : '';
+    H2.img = okUrl(H2.img); R2.img = okUrl(R2.img);
+    J2.u = okUrl(J2.u); J2.q = okUrl(J2.q);
     const sel = `[data-theme="${theme === 'dark' ? 'night' : 'day'}"]`;
     let css = '';
     /* ① 主题颜色（当前模式一套） */
@@ -545,7 +594,10 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
           }
         } catch (e) {}
       }
-      s.o[s.k] = await putImg(v);
+      const ref = await putImg(v);
+      s.o[s.k] = ref;
+      /* 新建记录也记住 id，回写后可复用，不再每次保存堆积孤儿 */
+      if (typeof ref === 'string' && ref.charAt(0) === '#') s.o['_id_' + s.k] = ref.slice(1);
     }
   }
   function hexA(c, a) {
@@ -565,8 +617,9 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
     let layer = reader.querySelector('.reader-bgimg');
     const themeNow = document.body.getAttribute('data-theme') === 'night' ? 'dark' : 'light';
     const src = AR && AR[themeNow] && AR[themeNow].readerBg.img;
-    const want = !!src;
-    if (layer && src) layer.style.backgroundImage = src.startsWith('media-store://') ? 'none' : `url("${src}")`;
+    const want = !!src && !src.startsWith('#') && !src.startsWith('media-store://');
+    /* 背景图由 applyAppearance 里已解析的 CSS 规则承担，这里只负责
+       「图层存在与否」，不再写 inline —— 写进 '#id' 会盖掉 CSS 变成空白 */
     if (!want) { if (layer) layer.style.backgroundImage = 'none'; return; }
     if (!layer) {
       layer = document.createElement('div');
@@ -585,26 +638,38 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
     _heroPending = true;
     requestAnimationFrame(() => { _heroPending = false; _injectHeroNow(); });
   }
+  function curHeroSlot() {
+    return AR && (AR[document.body.getAttribute('data-theme') === 'night' ? 'dark' : 'light'].hero || {});
+  }
   function _injectHeroNow() {
     try {
       const body = document.getElementById('deskBody');
       if (!body) return;
-      const old = body.querySelector('.ar-hero');
-      const src = (AR && AR[document.body.getAttribute('data-theme') === 'night' ? 'dark' : 'light'].hero.img) || '';
-      if (!src) { if (old) old.remove(); return; }
-      if (old) { if (old._arHeroSrc === src) return; old._arHeroSrc = src; old.querySelector('img').src = src; return; }
-      const fig = document.createElement('div');
-      fig.className = 'ar-hero';
-      fig._arHeroSrc = src;
-      /* 5.7.1：卡片比例跟随裁剪比例（横向条幅），未裁剪保持默认 16:9 */
-      const cropNow = (AR && AR[document.body.getAttribute('data-theme') === 'night' ? 'dark' : 'light'].hero.crop) || '';
-      if (cropNow === '3:1' || cropNow === '4:1' || cropNow === '5:1') fig.style.aspectRatio = cropNow.replace(':', ' / ');
-      fig.innerHTML = `<img src="${escHTML(src)}" alt="">`;
-      const head = body.querySelector('.h-row');
-      if (head && head.nextElementSibling) body.insertBefore(fig, head.nextElementSibling);
-      else if (head) head.after(fig);
-      else body.insertBefore(fig, body.firstChild);
+      const H = curHeroSlot();
+      const raw = (H && H.img) || '';
+      /* 5.7.2 守卫：值仍是 '#id' 引用时（旧数据/竞态）异步换回再注入，
+         绝不把引用塞进 <img src> —— 那正是「主图纯白/问号」 */
+      if (typeof raw === 'string' && raw.charAt(0) === '#') {
+        resolveImg(raw).then((d) => { if (d && d.charAt(0) !== '#') _placeHero(body, d, H); else { const o = body.querySelector('.ar-hero'); if (o) o.remove(); } });
+        return;
+      }
+      _placeHero(body, raw, H);
     } catch (e) { console.warn('[深读] 主图注入失败', e); }
+  }
+  function _placeHero(body, src, H) {
+    const old = body.querySelector('.ar-hero');
+    if (!src) { if (old) old.remove(); return; }
+    if (old) { if (old._arHeroSrc !== src) { old._arHeroSrc = src; old.querySelector('img').src = src; } return; }
+    const fig = document.createElement('div');
+    fig.className = 'ar-hero';
+    fig._arHeroSrc = src;
+    const cropNow = (H && H.crop) || '';
+    if (cropNow === '3:1' || cropNow === '4:1' || cropNow === '5:1') fig.style.aspectRatio = cropNow.replace(':', ' / ');
+    fig.innerHTML = `<img src="${escHTML(src)}" alt="">`;
+    const head = body.querySelector('.h-row');
+    if (head && head.nextElementSibling) body.insertBefore(fig, head.nextElementSibling);
+    else if (head) head.after(fig);
+    else body.insertBefore(fig, body.firstChild);
   }
   /* 主题切换联动重涂 */
   function watchTheme() {
@@ -741,7 +806,21 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
     if (!wrap) return;
     const file = wrap.querySelector('input[type=file]');
     const prev = wrap.querySelector('.ar-imgprev');
-    const render = () => { prev.innerHTML = obj.img ? `<img src="${escHTML(obj.img)}" alt="">` : '<span class="ar-none">未设置</span>'; };
+    /* 5.7.2：预览异步解析 —— 值是 '#id' 引用时先换回 dataURL 再渲染，
+       绝不把引用塞进 <img src>（那就是「问号」） */
+    const render = () => {
+      const v = obj.img;
+      if (!v) { prev.innerHTML = '<span class="ar-none">未设置</span>'; return; }
+      if (typeof v === 'string' && v.charAt(0) === '#') {
+        prev.innerHTML = '<span class="ar-none">图片加载中…</span>';
+        resolveImg(v).then((d) => {
+          if (d && d.charAt(0) !== '#') prev.innerHTML = `<img src="${escHTML(d)}" alt="">`;
+          else prev.innerHTML = '<span class="ar-none">图片读取失败 · 数据仍在库中，重启可恢复</span>';
+        });
+        return;
+      }
+      prev.innerHTML = `<img src="${escHTML(v)}" alt="">`;
+    };
     render();
     file.addEventListener('change', () => {
       const f = file.files[0]; if (!f) return;
@@ -873,7 +952,7 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
         <button data-t="common">通用</button>
         <button data-t="light">浅色</button>
         <button data-t="dark">深色</button>
-        <span style="flex-shrink:0;font-size:10px;color:var(--ink-3);align-self:center;margin-left:auto;">代码 v5.7.1</span>
+        <span style="flex-shrink:0;font-size:10px;color:var(--ink-3);align-self:center;margin-left:auto;">代码 v5.7.2</span>
       </div>
       <div id="arSub" style="display:none;">
         <div class="ar-tabs" id="arSubTabs">
@@ -956,7 +1035,14 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
           const heroObj = draft[which].hero;
           const refreshHero = () => {
             const prev = heroWrap && heroWrap.querySelector('.ar-imgprev');
-            if (prev) prev.innerHTML = heroObj.img ? `<img src="${escHTML(heroObj.img)}" alt="">` : '<span class="ar-none">未设置</span>';
+            if (!prev) return;
+            const v = heroObj.img;
+            if (v && typeof v === 'string' && v.charAt(0) === '#') {
+              prev.innerHTML = '<span class="ar-none">图片加载中…</span>';
+              resolveImg(v).then((d) => { prev.innerHTML = (d && d.charAt(0) !== '#') ? `<img src="${escHTML(d)}" alt="">` : '<span class="ar-none">未设置</span>'; });
+              return;
+            }
+            prev.innerHTML = v ? `<img src="${escHTML(v)}" alt="">` : '<span class="ar-none">未设置</span>';
           };
           const recrop = async () => {
             const s = await resolveImg(heroObj.src || heroObj.img || '');
@@ -995,8 +1081,9 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
             const keep = { templates: AR.templates, activeTpl: AR.activeTpl };
             AR = arClone(draft);
             AR.templates = keep.templates; AR.activeTpl = keep.activeTpl;
-            await compactImages(AR);
-            await hydrateImages(AR);
+            /* 5.7.2：AR/draft 内存里恒为 dataURL；saveAppearance 内部会克隆
+               并 compact 成 '#id' 引用写库。此处不再就地改写 AR——
+               之前就地改写导致主图注入拿到引用显示纯白、面板预览问号 */
             const ok = await saveAppearance();
             applyAppearance();
             /* 5.6.2：回读校验，把「保存是否真的落库、图片是否真的存进去」明确反馈出来 */
@@ -1033,7 +1120,9 @@ ${sel} mark.rl-question{text-decoration-color:${hexA(C.highlight,.6)} !important
             dark: arClone(draft.dark),
           });
           AR.activeTpl = '';
-          await compactImages(AR);
+          /* 5.7.2：这里不再就地 compactImages(AR) —— saveAppearance 内部
+             会对克隆副本统一转引用并回写 id，就地改写会让内存里
+             新模板的图片变成引用（面板/渲染靠缓存侥幸能用，不该依赖） */
           await saveAppearance();
           renderTplList(root);
           toast('模板已保存（含深浅两套外观）');

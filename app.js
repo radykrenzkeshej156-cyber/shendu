@@ -291,28 +291,74 @@ async function saveCoreadSettings() {
    把「正在读什么、聊到哪」同步为 TA 短期记忆事件流里的**一条**事件：
    固定 appEventId=deepread_status，重复同步先删后写 = 覆盖，不会累积刷屏；
    可随时一键清除。角色在聊天生成时经短期记忆事件流自然读到。 */
+/* 近况卡片：一条会话消息即一条可管理的记忆载体。
+   卡片带 historyText → 进入 AI 可见历史（短期记忆）；
+   用户在聊天里长按删除这条卡片消息 → 该记忆随之移除，
+   彻底避免「注入了却删不掉」。再次同步走 updateCard，不堆叠。 */
+function statusCardHtml(bookTitle, chapter, pct, note, when) {
+  const esc2 = (s) => esc(s);
+  return `<style>
+    .dr{min-height:150px;padding:16px 16px 14px;color:#26262a;
+      background:linear-gradient(180deg,#faf9f8,#f1f0ee);
+      border:1px solid rgba(0,0,0,.07);border-radius:16px;
+      font:13px/1.7 -apple-system,BlinkMacSystemFont,"Songti SC",serif;}
+    .dr .k{font-size:9.5px;letter-spacing:.28em;color:#9a9aa1;margin-bottom:10px;}
+    .dr .t{font-size:17px;font-weight:500;color:#1a1a1d;letter-spacing:.02em;line-height:1.5;}
+    .dr .s{font-size:12px;color:#6d6d73;margin-top:5px;}
+    .dr .bar{height:2px;background:rgba(0,0,0,.08);border-radius:2px;margin:12px 0 8px;overflow:hidden;}
+    .dr .bar i{display:block;height:100%;background:#3a3a3e;border-radius:2px;}
+    .dr .q{font-size:12.5px;color:#3a3a3e;line-height:1.75;margin-top:10px;padding-left:10px;border-left:2px solid rgba(0,0,0,.14);}
+    .dr .f{font-size:10px;color:#9a9aa1;letter-spacing:.16em;margin-top:12px;text-align:right;}
+  </style>
+  <div class="dr">
+    <div class="k">DEEPREAD · 正在读</div>
+    <div class="t">${esc2(bookTitle || '深读')}</div>
+    ${chapter ? `<div class="s">${esc2(chapter)}${pct != null ? ' · 约 ' + pct + '%' : ''}</div>` : ''}
+    ${pct != null ? `<div class="bar"><i style="width:${Math.max(2, Math.min(100, pct))}%"></i></div>` : ''}
+    ${note ? `<div class="q">${esc2(note)}</div>` : ''}
+    <div class="f">${esc2(when || '')}</div>
+  </div>`;
+}
+const STATUS_EVT = 'deepread_status';
 async function syncReadingStatus(extraNote) {
   if (!S.companionId) { const ok = await ensureCompanion(); if (!ok) return false; }
   const b = S.rBook;
-  let summary = '';
+  let chapter = '', pct = null;
+  const bookTitle = b ? b.title : '深读';
   if (b && S.rChapter) {
-    const pct = totalParas(b) ? Math.round(Math.min(100, ((S.rParaCur || 0) + 1) / totalParas(b) * 100)) : 0;
-    summary = `${b.title}${b.author ? ' · ' + b.author : ''}，读到「${S.rChapter.title}」（约 ${pct}%）`;
+    chapter = S.rChapter.title;
+    pct = totalParas(b) ? Math.round(Math.min(100, ((S.rParaCur || 0) + 1) / totalParas(b) * 100)) : 0;
   } else if (b) {
-    summary = `${b.title}，上次阅读「${bookCurrentChapterTitle(b) || '未开始'}」`;
-  } else {
-    summary = '正在用深读读书，还没有开始具体的书';
+    chapter = bookCurrentChapterTitle(b) ? ('上次读到「' + bookCurrentChapterTitle(b) + '」') : '';
   }
-  if (extraNote) summary += '。刚才共读讨论：' + String(extraNote).slice(0, 160);
+  const note = extraNote ? String(extraNote).slice(0, 160) : '';
+  const when = new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' }) + ' ' + new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  const hist = `[深读·阅读近况] ${bookTitle}${chapter ? '，' + chapter : ''}${pct != null ? '（约 ' + pct + '%）' : ''}${note ? '；刚才共读讨论：' + note : ''}`;
   try {
-    try { await A.memory.deleteTimeline({ characterId: S.companionId, appEventId: 'deepread_status' }); } catch (e) {}
-    await A.memory.addTimeline({
-      characterId: S.companionId, appLabel: '深读',
-      appEventId: 'deepread_status', detail: 'reading_status',
-      summary: '【深读·阅读近况】' + summary,
-      data: { book: b ? b.title : '', chapter: S.rChapter ? S.rChapter.title : '', note: extraNote || '' },
+    const card = {
+      appLabel: '深读', height: 196,
+      html: statusCardHtml(bookTitle, chapter, pct, note, when),
+    };
+    const prev = (await listData('meta')).find(m => m.id === 'status_card');
+    if (prev && prev.messageId && prev.sessionId) {
+      try {
+        await A.chat.updateCard({
+          messageId: prev.messageId, sessionId: prev.sessionId,
+          html: card.html, height: 196,
+        });
+        toast('已更新给 TA（覆盖上次近况）');
+        return true;
+      } catch (e) { /* 旧卡片已被删除/失效，重新发一张 */ }
+    }
+    const res = await A.chat.sendCard({
+      characterId: S.companionId, role: 'user',
+      summary: hist, historyText: hist, historyRole: 'system',
+      card,
     });
-    toast('已同步近况给 TA');
+    const mid = (res && (res.messageId || (res.message && res.message.id))) || null;
+    const sid = (res && (res.sessionId || (res.message && res.message.sessionId))) || null;
+    if (mid) await upsert('meta', { id: 'status_card', messageId: mid, sessionId: sid, characterId: S.companionId });
+    toast('已发给 TA · 删除聊天里这张卡片即可撤销 TA 的记忆');
     return true;
   } catch (e) {
     toast('同步失败：' + ((e && e.message) || e));
@@ -320,11 +366,19 @@ async function syncReadingStatus(extraNote) {
   }
 }
 async function clearReadingStatus() {
-  if (!S.companionId) { toast('还没有共读伙伴'); return; }
-  try {
-    await A.memory.deleteTimeline({ characterId: S.companionId, appEventId: 'deepread_status' });
-    toast('已清除同步的近况');
-  } catch (e) { toast('清除失败：' + ((e && e.message) || e)); }
+  const prev = (await listData('meta')).find(m => m.id === 'status_card');
+  if (prev && prev.messageId && prev.sessionId) {
+    try {
+      await A.chat.updateCard({
+        messageId: prev.messageId, sessionId: prev.sessionId,
+        status: '已失效', openDisabled: true,
+        actions: [{ label: '已失效', style: 'muted', disabled: true }],
+      });
+    } catch (e) {}
+  }
+  await removeById('meta', 'status_card').catch(() => {});
+  try { await A.memory.deleteTimeline({ characterId: S.companionId, appEventId: STATUS_EVT }); } catch (e) {}
+  toast('已清除近况卡片');
 }
 
 /* ───────── 章节切分 ───────── */
@@ -346,18 +400,27 @@ function splitBook(content) {
   }
   if (cur) chapters.push(cur);
   if (!chapters.length) chapters.push({ title: '开篇', lines: rawLines });
-  /* 5.7.1 修复目录乱序：TXT 书开头的「目录区」每一行都像章节标题，
-     会造出一批内容只有一两行（页码/省略号）的假章，与真章混排导致
-     目录显示成「十四、十三、九…」。规则：同名章节在后面再次出现，
-     且前面这条几乎没内容 → 判定为目录残留，丢弃。 */
-  const normToc = (t) => String(t).replace(/[\s.·。・‥…\-—\d]/g, '').slice(0, 14);
-  const lastIndex = {};
-  chapters.forEach((c, i) => { lastIndex[normToc(c.title)] = i; });
+  /* 5.7.2 修复目录乱序（加强版）：TXT 书开头的「目录区」每一行都像章节
+     标题，会造出一批内容只有一两行的假章与真章混排。
+     5.7.1 按全名匹配，遇到「目录行没有副标题、正文标题带副标题」
+     （如 "第一章……1" vs "第一章 觉醒"）就失效。
+     改为按序数词匹配：第X章 的「X」相同、且本条几乎没内容、
+     后文还有一个同序数的真章 → 判为目录残留丢弃。 */
+  const ordOf = (t) => {
+    const m = String(t).match(/^第\s*([\d一二三四五六七八九十百千万零〇两]+)\s*[章节回卷篇部]/);
+    return m ? m[1] : '';
+  };
+  const bodyCount = (c) => c.lines.filter(l => {
+    const s = String(l).trim();
+    return s && !/^[\d.·。・‥…\-—\s]{1,14}$/.test(s);
+  }).length;
+  const seenLater = {};
+  chapters.forEach((c, i) => { const o = ordOf(c.title); if (o) seenLater[o] = i; });
   const cleaned = chapters.filter((c, i) => {
-    const k = normToc(c.title);
-    const body = c.lines.filter(l => l.trim() && !/^[\d.·。\-—s]{1,12}$/i.test(l.trim())).length;
-    if (body <= 2 && lastIndex[k] > i) return false;
-    return true;
+    const o = ordOf(c.title);
+    if (!o) return true;
+    if (bodyCount(c) > 2) return true;
+    return !(seenLater[o] > i);   // 后文有同序数真章 → 这条是目录行
   });
   return (cleaned.length ? cleaned : chapters).filter(c => c.lines.some(l => l.trim())).map(c => ({
     title: c.title || '开篇',
