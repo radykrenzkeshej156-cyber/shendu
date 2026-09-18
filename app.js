@@ -181,23 +181,31 @@ async function listData(col) {
    精炼 / 概念提取 / metadata / 召回筛选 / Session Summary / 改变分析这类轻活，
    统一走 ai.chat + apiConfigId 指向用户在小手机「设置 → API 设置」里配置的小模型。
    未配置 apiConfigId 时由宿主用默认配置，功能不中断。 */
+/* 5.7.3：API 调用计数 + 小模型配置熔断。
+   计数如实展示「一轮共读打了几次 API」（见「本次共读上下文」）；
+   熔断解决「配置 ID 填错时，每一次杂活都要先失败一次再回退一次」把请求数翻倍的问题：
+   首次失败即记住，本次运行期内直接走默认 API（改设置时重新给一次机会）。 */
+const aiCalls = { light: 0, main: 0 };
+let smallApiBroken = false;
 async function lightAI({ messages, apiConfigId, timeoutMs }) {
   const cfgId = apiConfigId || (S.coset ? S.coset.smallApi : null);
   const params = { messages };
   if (timeoutMs) params.timeoutMs = timeoutMs;
-  if (cfgId) {
+  if (cfgId && !smallApiBroken) {
     /* 指定了小模型配置：优先用它；若配置 ID 无效、返回空或调用失败，自动回退默认 API，
        保证精炼/召回/摘要等杂活永不因一个填错的 ID 而中断 */
     try {
+      aiCalls.light++;
       const r = await A.ai.chat({ ...params, apiConfigId: cfgId });
       if (r && (r.text || r.content)) return r;
       console.warn('[深读] 指定小模型配置返回空，回退默认 API');
-      return await A.ai.chat(params);
+      smallApiBroken = true;
     } catch (e) {
       console.warn('[深读] 指定小模型配置调用失败，回退默认 API', e && e.message ? e.message : e);
-      return await A.ai.chat(params);
+      smallApiBroken = true;
     }
   }
+  aiCalls.light++;
   return await A.ai.chat(params);
 }
 async function lightAIText(system, user, opts) {
@@ -514,8 +522,14 @@ async function chapterSummary(ch) {
   return null;  // 未生成
 }
 /* 分块：把整章文本切成若干块（每块约 maxLen 字），返回块数组 */
+/* 5.7.3：章节精炼最多切 4 块。超长章节（EPUB 一整部 / TXT 一整卷几万字）
+   若按 2600 字硬切会切出十几块 = 十几次小模型调用；这里自动放大块长，
+   把「精炼」封顶在 4 次分块 + 1 次合并。 */
+const MAX_SUMMARY_CHUNKS = 4;
 function chunkText(text, maxLen = 2600) {
   const paras = parasOf(text);
+  const totalLen = paras.reduce((a, p) => a + p.t.length + 2, 0);
+  if (totalLen > maxLen * MAX_SUMMARY_CHUNKS) maxLen = Math.ceil(totalLen / MAX_SUMMARY_CHUNKS);
   const chunks = [];
   let cur = [], curLen = 0;
   for (const p of paras) {
@@ -1715,7 +1729,8 @@ function recallToText(kept) {
 /* ───────── 共读 AI 生成（透明可配置上下文 + 三级检索 + 严格沉淀规则） ───────── */
 /* 记录本次共读 AI 实际看到的上下文（供「本次共读上下文」查看） */
 function emptyCtxLog() {
-  return { origLen: 0, summary: false, bookU: 0, bookQ: 0, crossU: 0, crossQ: 0, concepts: 0, sessions: 0, card: false, msgs: 0, memShort: false, memLong: false, core: false, carried: 0, tokenEst: 0,
+  return { origLen: 0, summary: false, summaryMissing: false, bookU: 0, bookQ: 0, crossU: 0, crossQ: 0, concepts: 0, sessions: 0, card: false, msgs: 0, memShort: false, memLong: false, core: false, carried: 0, tokenEst: 0,
+    aiCalls: 0, lightCalls: 0, mainCalls: 0,
     /* 内容透明：不只是数量，还要让用户看到 AI 实际读到的东西 */
     unitText: '', summaryText: '', recallText: '', carriedText: '' };
 }
@@ -1731,6 +1746,7 @@ async function generateCoReply(userText, s) {
   const unit = extractUnit(chapter.text, local, origLen);
 
   resetCtxLog();
+  aiCalls.light = 0; aiCalls.main = 0;
   ctxLog.origLen = unit.length;
   ctxLog.unitText = unit;
 
@@ -1747,12 +1763,18 @@ async function generateCoReply(userText, s) {
     try { const l = await A.memory.readLongTerm({ characterId: S.companionId, query: userText.slice(0, 60) }); if (l && (l.items && l.items.length)) { memBlocks.push('【TA的长期记忆】\n' + (Array.isArray(l.items) ? l.items.slice(0, coset.memLong).map(x => x.content || x.text || String(x)).join('\n') : String(l).slice(0, 500))); ctxLog.memLong = true; } } catch (e) {}
   }
 
-  /* ② 当前章节：精炼 + 原文窗口（精炼可开关；关闭则不生成也不注入） */
+  /* ② 当前章节：精炼 + 原文窗口（精炼可开关）
+     5.7.3 修复「发一条共读消息，AI 连续调用十几次 API、等很久」：
+     共读链路**只使用已生成的**章节精炼，绝不再现场生成。
+     原来这里 !summary 就调 generateChapterSummary → mergeSummaryChunks，
+     会把整章逐块请求小模型（长章十几块 = 十几次调用）再合并一次，
+     叠加召回筛选 1 次 + 角色共读 1 次，就成了「一次共读 18 次 API」。
+     这也与 5.7 的既定设计一致：精炼一律由用户在章节卡片上手动生成。 */
   let summary = '';
   if (coset.includeSummary !== false) {
-    summary = await chapterSummary(chapter);
-    if (!summary) summary = await generateChapterSummary(chapter);
+    summary = (await chapterSummary(chapter)) || '';
     if (summary) { ctxLog.summary = true; ctxLog.summaryText = summary; }
+    else ctxLog.summaryMissing = true;
   }
 
   /* ③ 本书其他章节 + ④ 跨书：三级检索 —— 每个 Session 只检索一次，结果缓存复用。
@@ -1839,6 +1861,7 @@ ${userText}
 - 不输出【概念】（概念由章节精炼自动提取）。
 没有达到长期保存标准就不输出这段。`;
 
+  aiCalls.main++;
   const result = await A.ai.generate({
     characterId: S.companionId,
     appTags: ['deepread', 'coread'],
@@ -2409,6 +2432,8 @@ function openCtxView() {
       + row('长期记忆', l.memLong)
       + row('带着的问题', l.carried > 0 ? `${l.carried}条` : false)
       + row('预估 token', `~${l.tokenEst}`)
+      + row('本轮 API 调用', `${l.aiCalls || 0} 次（角色 ${l.mainCalls || 0} + 小模型 ${l.lightCalls || 0}）`)
+      + (l.summaryMissing ? row('章节精炼', '✗ 未生成（共读不再自动生成，去章节卡片手动点）') : '')
     : '<div class="empty">开始一次共读后，这里会展示<br>AI 每一轮实际看到的上下文</div>';
   const bodyBlocks = [
     seg('这轮读到的原文窗口', l.unitText && l.unitText.slice(0, 1200) + (l.unitText.length > 1200 ? ' …' : '')),
@@ -2419,6 +2444,7 @@ function openCtxView() {
   openSheet({
     title: '本次共读上下文',
     html: `<div style="font-size:12px;color:var(--ink-3);margin-bottom:8px;">这是最近一次共读 AI 真正收到的内容。点「▾」可展开看具体文字；数量与开关在「设置 → 共读设置」里调。</div>
+      <div style="font-size:12px;color:var(--ink-2);background:var(--surface-2);border-radius:12px;padding:9px 12px;margin:0 0 10px;line-height:1.7;">一轮共读 = <b>1 次角色 API</b>${ctxLog.lightCalls ? ' + ' + ctxLog.lightCalls + ' 次小模型杂活（召回筛选等）' : ''}。章节精炼不会在共读时自动生成，需要就到章节卡片点「生成章节精炼」。</div>
       <div class="ctx-card">${detail}</div>
       ${bodyBlocks ? `<div class="ctx-blocks">${bodyBlocks}</div>` : ''}
       <div class="btn-row"><button class="btn-c" id="ctxClose">关闭</button></div>`,
@@ -3659,6 +3685,7 @@ function openCoreadSettings() {
         coset.includeSummary = root.querySelector('#ckSummary').checked;
         coset.includeMsgs = root.querySelector('#ckMsgs').checked;
         coset.includeCrossBook = root.querySelector('#ckCross').checked;
+        smallApiBroken = false;   /* 5.7.3：改了小模型配置就重新给它一次机会 */
         await saveCoreadSettings();
         applyReaderFont();
         closeTopSheet();

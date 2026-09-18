@@ -301,11 +301,15 @@ input, textarea { font-family: inherit; color: var(--ink); }
 .shelf-add:active { transform: scale(.92); }
 .shelf-add:hover { color: var(--ink); }
 
-.shelf-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px 12px; margin-top: 18px; }
+/* 5.7.3 修复「书超过三本后一本大一本小」：
+   1fr 的最小宽度默认等于内容宽度（min-content = auto），长书名（.book-foot .t 是
+   nowrap 不换行）会把所在列撑宽，同一排封面就一大一小、越往后越歪。
+   必须写成 minmax(0, 1fr) 三列才严格等宽。 */
+.shelf-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px 12px; margin-top: 18px; align-items: start; }
 .book-foot { text-align: center; padding-top: 10px; }
 .book-foot .t { font-size: 12px; color: var(--ink); line-height: 1.35; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .book-foot .m { font-size: 10px; color: var(--ink-3); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.book-tape { position: relative; cursor: pointer; }
+.book-tape { position: relative; cursor: pointer; min-width: 0; }
 .book-tape .cover { aspect-ratio: 2 / 3; width: 100%; transition: transform .25s ease; }
 .book-tape:active .cover { transform: scale(.97); }
 .book-tape .more {
