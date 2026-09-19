@@ -3413,7 +3413,12 @@ async function doImport(root) {
       if (name.endsWith('.epub')) {
         setStatus('正在解析 EPUB…', true);
         const parsed = await EpubParser.parse(file);
-        setStatus(`解析成功：${parsed.chapters.length} 章`, false);
+        if (parsed.chapters.length > 1500) {
+          setStatus(`EPUB 过长（${parsed.chapters.length} 章），只取前 1500 章`, false);
+          parsed.chapters = parsed.chapters.slice(0, 1500);
+        } else {
+          setStatus(`解析成功：${parsed.chapters.length} 章`, false);
+        }
         await importBook(title || parsed.title || file.name.replace(/\.epub$/i, ''), author || parsed.author || '', 'epub', parsed.chapters.map((c, i) => ({ title: c.title || ('第 ' + (i + 1) + ' 节'), text: c.text })), parsed.coverDataUrl || '');
         closeTopSheet(); toast('导入成功'); renderLib();
         return;
@@ -3435,7 +3440,25 @@ async function doImport(root) {
 function readFileText(file) {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
-    r.onload = () => resolve(String(r.result || ''));
+    r.onload = () => {
+      const text = String(r.result || '');
+      // UTF-8 严格检查：出现替换字符则用 GBK 重解
+      if (text.includes('\ufffd')) {
+        const r2 = new FileReader();
+        r2.onload = () => {
+          try {
+            const buf = new Uint8Array(r2.result);
+            const decoded = new TextDecoder('gb18030').decode(buf);
+            resolve(decoded);
+          } catch (e) {
+            resolve(text);  // 回退到原 UTF-8
+          }
+        };
+        r2.readAsArrayBuffer(file);
+      } else {
+        resolve(text);
+      }
+    };
     r.onerror = () => reject(new Error('读取失败'));
     r.readAsText(file, 'utf-8');
   });
@@ -3444,14 +3467,34 @@ async function importBook(title, author, format, chapters, coverImg) {
   const bookId = 'book_' + uid();
   const covers = ['#3a3a3e', '#4c4c50', '#5d5d62', '#6e6e73', '#7f7f84', '#2f2f33'];
   const coverColor = covers[Math.floor(Math.random() * covers.length)];
+  
+  // 5.7.3：导入前提示超长书籍
+  if (chapters.length > 1500) {
+    const ok = await new Promise((resolve) => {
+      openSheet({
+        title: '书籍较长',
+        html: `<div style="font-size:13px;line-height:1.8;color:var(--ink-2);margin-bottom:10px;">《${esc(title)}》共 ${chapters.length} 章，超过推荐上限。导入时会合并相邻短章，最终约 ${Math.ceil(chapters.length * 0.7)} 章。</div>
+          <div class="btn-row"><button class="btn-c" id="cancelImport">取消</button><button class="btn-p" id="confirmImport">继续导入</button></div>`,
+        onOpen: (root) => {
+          root.querySelector('#cancelImport').addEventListener('click', () => { closeTopSheet(); resolve(false); });
+          root.querySelector('#confirmImport').addEventListener('click', () => { closeTopSheet(); resolve(true); });
+        },
+      });
+    });
+    if (!ok) return;
+  }
+  
   const chapterMeta = [];
   let paraStart = 0;
+  // 5.7.3：直接 create 避免 O(N²) 全表读；分批让出主线程
   for (let i = 0; i < chapters.length; i++) {
     const cid = 'ch_' + bookId + '_' + i;
     const pcount = parasOf(chapters[i].text).length;
-    await upsert('chapters', { id: cid, bookId, idx: i, title: chapters[i].title, text: chapters[i].text, paraStart, paraCount: pcount });
+    await A.db.create('chapters', { id: cid, bookId, idx: i, title: chapters[i].title, text: chapters[i].text, paraStart, paraCount: pcount });
     chapterMeta.push({ cid, title: chapters[i].title, paraCount: pcount });
     paraStart += pcount;
+    // 每 20 章让出主线程一次，防止宿主卡顿
+    if (i % 20 === 19) await new Promise(r => setTimeout(r, 0));
   }
   await upsert('books', { id: bookId, version: 2, title: title || '未命名', author: author || '', format, coverColor, coverImg, chapterMeta, currentChapterId: chapterMeta[0] ? chapterMeta[0].cid : null, currentParaNum: 0, currentScrollRatio: 0, createdAt: Date.now(), lastReadAt: Date.now(), lastCoReadAt: null });
   addTimelineEvent('导入了一本书', `${format === 'epub' ? 'epub · ' : ''}${title}`, 'import', { bookId });
