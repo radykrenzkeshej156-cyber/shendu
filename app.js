@@ -391,11 +391,42 @@ async function clearReadingStatus() {
 
 /* ───────── 章节切分 ───────── */
 const CHAPTER_RE = /^(第[\d一二三四五六七八九十百千万零〇两]+[章节回卷篇部]|序章|序言|尾声|终章|引子|楔子|后记|跋|附录|Chapter\s+\d+|#+\s+|第[\d一二三四五六七八九十百千万零〇两]+章[:\s])/i;
+
 function splitBook(content) {
   const rawLines = String(content).split(/\n/);
+  
+  /* 5.7.4：新增第一阶段 — 目录区块整体识别与剔除
+     规则：若文件前 300 行里 ≥70% 的行符合「标题 + (空格|…|·|-|数字){2,} + 数字」模式，
+     认定为目录区块、整体删除后再进入章节切分。避免「第一章」、「第二章」被当成目录条目。
+  */
+  let contentLines = rawLines;
+  const firstLines = rawLines.slice(0, 300);
+  const tocPattern = /^.{1,20}[\s…·\-]{2,}[\d页0-9]{1,5}\s*$/;
+  const tocMatches = firstLines.filter(l => tocPattern.test(l.trim())).length;
+  
+  if (firstLines.length > 0 && tocMatches / firstLines.length >= 0.7) {
+    // 找出目录区的结束位置（连续空行或新章节为边界）
+    let tocEnd = 0;
+    for (let i = 0; i < rawLines.length; i++) {
+      if (CHAPTER_RE.test(rawLines[i].trim())) {
+        const beforeLines = rawLines.slice(Math.max(0, i - 5), i);
+        const emptyBefore = beforeLines.filter(l => !l.trim()).length;
+        if (emptyBefore >= 2) {
+          tocEnd = i;
+          break;
+        }
+      }
+    }
+    if (tocEnd > 0) {
+      contentLines = rawLines.slice(tocEnd);
+    }
+  }
+  
+  /* 5.7.4：第二阶段 — 按标题正则切分（已剔除目录区），不再做序数补丁猜测 */
   const chapters = [];
   let cur = null;
-  for (const line of rawLines) {
+  
+  for (const line of contentLines) {
     const t = line.trim();
     if (CHAPTER_RE.test(t) && t.length <= 60) {
       if (cur && cur.lines.some(l => l.trim())) chapters.push(cur);
@@ -406,31 +437,11 @@ function splitBook(content) {
       cur.lines.push(line);
     }
   }
+  
   if (cur) chapters.push(cur);
-  if (!chapters.length) chapters.push({ title: '开篇', lines: rawLines });
-  /* 5.7.2 修复目录乱序（加强版）：TXT 书开头的「目录区」每一行都像章节
-     标题，会造出一批内容只有一两行的假章与真章混排。
-     5.7.1 按全名匹配，遇到「目录行没有副标题、正文标题带副标题」
-     （如 "第一章……1" vs "第一章 觉醒"）就失效。
-     改为按序数词匹配：第X章 的「X」相同、且本条几乎没内容、
-     后文还有一个同序数的真章 → 判为目录残留丢弃。 */
-  const ordOf = (t) => {
-    const m = String(t).match(/^第\s*([\d一二三四五六七八九十百千万零〇两]+)\s*[章节回卷篇部]/);
-    return m ? m[1] : '';
-  };
-  const bodyCount = (c) => c.lines.filter(l => {
-    const s = String(l).trim();
-    return s && !/^[\d.·。・‥…\-—\s]{1,14}$/.test(s);
-  }).length;
-  const seenLater = {};
-  chapters.forEach((c, i) => { const o = ordOf(c.title); if (o) seenLater[o] = i; });
-  const cleaned = chapters.filter((c, i) => {
-    const o = ordOf(c.title);
-    if (!o) return true;
-    if (bodyCount(c) > 2) return true;
-    return !(seenLater[o] > i);   // 后文有同序数真章 → 这条是目录行
-  });
-  return (cleaned.length ? cleaned : chapters).filter(c => c.lines.some(l => l.trim())).map(c => ({
+  if (!chapters.length) chapters.push({ title: '开篇', lines: contentLines });
+  
+  return chapters.filter(c => c.lines.some(l => l.trim())).map(c => ({
     title: c.title || '开篇',
     text: c.lines.join('\n').replace(/\n{3,}/g, '\n\n'),
   }));
@@ -666,12 +677,14 @@ async function ensureBookChapters(book) {
     const chapters = splitBook(book.content);
     const chapterMeta = [];
     let paraStart = 0;
+    // 5.7.4：分批写入避免 O(N²) 存储堆栈溢出
     for (let i = 0; i < chapters.length; i++) {
       const cid = 'ch_' + book.id + '_' + i;
       const pcount = parasOf(chapters[i].text).length;
-      await upsert('chapters', { id: cid, bookId: book.id, idx: i, title: chapters[i].title, text: chapters[i].text, paraStart, paraCount: pcount });
+      await A.db.create('chapters', { id: cid, bookId: book.id, idx: i, title: chapters[i].title, text: chapters[i].text, paraStart, paraCount: pcount });
       chapterMeta.push({ cid, title: chapters[i].title, paraCount: pcount });
       paraStart += pcount;
+      if (i % 20 === 19) await new Promise(r => setTimeout(r, 0));
     }
     book.chapterMeta = chapterMeta;
     await upsert('books', book);
@@ -1205,11 +1218,23 @@ async function applyTraceDots() {
   const traces = await loadTraces(S.rBook.id);
   const ch = S.rChapter;
   const base = chapterParaStart(S.rBook, ch.id);
+  
+  // 5.7.4：建立快速索引，避免 O(段落数 × 痕迹数) 的二重循环
+  const tracesByPara = new Map();  // paraNum → [trace, ...]
+  for (const t of traces) {
+    if (t.chapterId === ch.id) {
+      if (!tracesByPara.has(t.paraNum)) {
+        tracesByPara.set(t.paraNum, []);
+      }
+      tracesByPara.get(t.paraNum).push(t);
+    }
+  }
+  
   inner.querySelectorAll('.para').forEach(pEl => {
     const i = parseInt(pEl.dataset.paraI);
     if (isNaN(i)) return;
     const num = base + i;
-    const hits = traces.filter(t => t.chapterId === ch.id && t.paraNum === num);
+    const hits = tracesByPara.get(num) || [];
     if (!hits.length) return;
     /* 精确划线：用 mark 包裹选中的文字（共鸣=荧光笔 / 谈这句=下划线 / 理解=波浪线 / 问题=波浪线另一色） */
     const rawText = pEl.textContent;

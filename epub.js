@@ -1,8 +1,12 @@
-/* 深读 · epub.js —— 浏览器内 EPUB 解析（零依赖）
-   思路：EPUB 是 zip。手写一个极小的 zip 读取器：
-   从文件末尾找 EOCD → 遍历 Central Directory 建立文件索引 →
-   按需解压（原生 DecompressionStream，deflate-raw / stored）。
-   输出 { title, author, coverDataUrl, chapters:[{title, text}] } */
+/* 深读 · epub.js —— 浏览器内 EPUB 解析（零依赖，5.7.4 重构版）
+   架构：ZIP 读取 → OPF 解析 → 完整目录树 + 线性块流 → 按锚点切割章节
+   
+   核心数据结构（替代旧的四套启发式）：
+   NavNode    目录树节点，保留完整层级关系，不拍平
+   Block      全书线性块流，每块一个段落级文本单元 + 该块内的所有锚点
+   Cut        目录条目在块流上的切点位置
+   Chapter    最终输出，包含 labelChain 完整层级和正文范围
+*/
 
 const EpubParser = (() => {
   const te = new TextDecoder('utf-8');
@@ -95,284 +99,287 @@ const EpubParser = (() => {
     return s;
   }
 
-  async function parse(file) {
-    const z = await openZip(file);
-    const opfPath = await readMeta(z);
-    const opf = textDoc(await readEntry(z, opfPath), 'application/xml');
-    const title = (opf.querySelector('metadata > title')?.textContent || '').trim();
-    const author = (opf.querySelector('metadata > creator')?.textContent || '').trim();
-    const manifest = {};
-    /* 5.7.3：额外记录每个 manifest item 的 properties / media-type，
-       用来精确认出目录文件（EPUB3 的 nav 文档、EPUB2 的 NCX），
-       不再靠文件名里有没有 toc/nav/ncx 猜。 */
-    const manifestProps = {};
-    opf.querySelectorAll('manifest > item').forEach(it => {
-      const id = it.getAttribute('id'), href = it.getAttribute('href');
-      if (id && href) {
-        manifest[id] = href;
-        manifestProps[id] = {
-          props: (it.getAttribute('properties') || '').toLowerCase(),
-          mime: (it.getAttribute('media-type') || '').toLowerCase(),
-        };
-      }
-    });
-    const spine = [];
-    opf.querySelectorAll('spine > itemref').forEach(r => {
-      const id = r.getAttribute('idref');
-      if (id && manifest[id]) spine.push(manifest[id]);
-    });
-    const navEntries = await readNavEntries(z, manifest, manifestProps, opfPath);
-    let coverDataUrl = '';
-    const coverId = opf.querySelector('meta[name="cover"]')?.getAttribute('content');
-    const coverHref = (coverId && manifest[coverId]) || opf.querySelector('manifest > item[properties~="cover-image"]')?.getAttribute('href');
-    if (coverHref) {
-      try {
-        const blob = await readEntryBlob(z, resolve(opfPath, coverHref));
-        if (blob.size <= 400 * 1024 && blob.type.startsWith('image/')) {
-          coverDataUrl = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = () => res(''); r.readAsDataURL(blob); });
+  /* 5.7.4：新数据结构 — 目录树节点（保留完整层级，不拍平）*/
+  function NavNode(label, href, fragment) {
+    this.label = label;
+    this.href = href;       // OPF 相对路径（用 resolve 转成 path）
+    this.fragment = fragment;  // 锚点（可空）
+    this.children = [];
+    this.playOrder = 0;
+  }
+
+  /* 5.7.4：快速查证「根节点是否是包裹层」
+     标志：①根只有一个子 ②根的 label 与书名相同或互为前缀 ③根的 label 属于包裹名单
+  */
+  function shouldUnwrapRoot(root, bookTitle) {
+    if (!root || root.children.length !== 1) return false;
+    const rootLabel = (root.label || '').trim().toLowerCase();
+    const title = (bookTitle || '').trim().toLowerCase();
+    if (rootLabel === title || title.indexOf(rootLabel) === 0 || rootLabel.indexOf(title) === 0) return true;
+    const wrapperNames = ['封面', '正文', '目录', '内容', '前言', '序言', '导读'];
+    return wrapperNames.includes(root.label);
+  }
+
+  /* 5.7.4：从 NCX 构建目录树（保留完整层级）*/
+  async function readNcxNav(z, navPath, opfPath) {
+    let content;
+    try { content = await readEntry(z, navPath); }
+    catch (e) { return null; }
+    
+    const doc = textDoc(content, 'application/xml');
+    const root = new NavNode('');
+    const localName = (n) => String(n.localName || n.tagName || '').toLowerCase();
+    
+    const walkNP = (np, parentNode) => {
+      const navLabel = Array.from(np.childNodes).find(c => localName(c) === 'navlabel');
+      const label = navLabel ? navLabel.textContent.trim().replace(/\s+/g, ' ') : np.textContent.trim();
+      const cEl = Array.from(np.childNodes).find(c => localName(c) === 'content');
+      const src = cEl ? (cEl.getAttribute('src') || '') : '';
+      
+      if (label && src) {
+        const navNode = new NavNode(label, src, '');
+        const hashAt = src.indexOf('#');
+        if (hashAt >= 0) {
+          navNode.href = src.slice(0, hashAt);
+          navNode.fragment = src.slice(hashAt + 1);
         }
-      } catch (e) {}
+        parentNode.children.push(navNode);
+        
+        // 递归子 navPoint
+        for (const kid of Array.from(np.childNodes)) {
+          if (kid.nodeType === 1 && localName(kid) === 'navpoint') {
+            walkNP(kid, navNode);
+          }
+        }
+      }
+    };
+    
+    // 只从最外层 navPoint 起递归
+    for (const np of doc.querySelectorAll('navPoint')) {
+      let p = np.parentNode, nested = false;
+      while (p && p.nodeType === 1) {
+        if (localName(p) === 'navpoint') { nested = true; break; }
+        p = p.parentNode;
+      }
+      if (!nested) walkNP(np, root);
     }
-    const chapters = [];
+    
+    return root;
+  }
+
+  /* 5.7.4：从 EPUB3 nav 构建目录树（保留完整层级）*/
+  async function readEpub3Nav(z, navPath, opfPath) {
+    let content;
+    try { content = await readEntry(z, navPath); }
+    catch (e) { return null; }
+    
+    const doc = textDoc(content, 'text/html');
+    const root = new NavNode('');
+    const localName = (n) => String(n.localName || n.tagName || '').toLowerCase();
+    
+    const walkOl = (ol, parentNode) => {
+      for (const li of ol.children) {
+        if (localName(li) !== 'li') continue;
+        const kids = Array.from(li.children);
+        const a = kids.find(n => localName(n) === 'a' || localName(n) === 'span');
+        const label = a ? (a.textContent || '').trim().replace(/\s+/g, ' ') : '';
+        const hrefRaw = a ? (a.getAttribute('href') || '') : '';
+        const sub = kids.find(n => localName(n) === 'ol');
+        
+        if (label && hrefRaw) {
+          const navNode = new NavNode(label, hrefRaw, '');
+          const hashAt = hrefRaw.indexOf('#');
+          if (hashAt >= 0) {
+            navNode.href = hrefRaw.slice(0, hashAt);
+            navNode.fragment = hrefRaw.slice(hashAt + 1);
+          }
+          parentNode.children.push(navNode);
+        }
+        
+        if (sub) walkOl(sub, navNode || parentNode);
+      }
+    };
+    
+    // 找到 toc 那一份 nav
+    const navs = Array.from(doc.querySelectorAll('nav'));
+    const navRoot = navs.find(n => /(^|\s)toc(\s|$)/.test(n.getAttribute('epub:type') || n.getAttribute('type') || ''))
+      || navs.find(n => n.querySelector('ol'))
+      || doc.body;
+    
+    if (navRoot) {
+      for (const ol of navRoot.querySelectorAll('ol')) {
+        let p = ol.parentNode, nested = false;
+        while (p && p.nodeType === 1) {
+          if (localName(p) === 'ol') { nested = true; break; }
+          p = p.parentNode;
+        }
+        if (!nested) walkOl(ol, root);
+      }
+    }
+    
+    return root;
+  }
+
+  /* 5.7.4：把目录树的相对路径转成 spine 路径，并相对于 opfPath 解析 */
+  function resolveNavTree(root, opfPath, navPath) {
+    const walk = (node) => {
+      if (node.href) {
+        const navFileDir = navPath.split('/').slice(0, -1).join('/');
+        const relativeTo = navFileDir ? navFileDir + '/' : '';
+        node.href = resolve(opfPath, relativeTo + node.href);
+      }
+      for (const child of node.children) walk(child);
+    };
+    walk(root);
+  }
+
+  /* 5.7.4：线性块流。遍历所有 spine 文档，把每份 xhtml 切成块（段落级文本单元），
+     记录每块内的所有锚点（id 与 a[name]），用于后续按锚点切割。
+  */
+  async function buildBlockStream(z, spine, opfPath) {
+    const blocks = [];      // {path, index, text, anchorSet}
+    const pathToBlocks = {}; // path → [blockIndex, ...]，用于快速查同一文件内的块
+    
     for (const href of spine) {
       const path = resolve(opfPath, href);
       let html = '';
-      try { html = await readEntry(z, path); } catch (e) { continue; }
-      /* 5.7.3：一个 xhtml 文件可能承载多级目录（部 → 卷 → 章 共用一个文件、
-         靠 #锚点 区分，《悲惨世界》就是这样）。按目录锚点把文件切成多章。 */
-      const pieces = splitByNavEntries(html, navEntries.filter(e => e.path === path));
-      for (const pc of pieces) {
-        if (!pc.text || !pc.text.trim()) continue;
-        chapters.push({ title: pc.title || ('第 ' + (chapters.length + 1) + ' 节'), text: pc.text });
-        if (chapters.length >= 4000) break;
+      try { html = await readEntry(z, path); }
+      catch (e) { continue; }
+      
+      const doc = textDoc(cleanHTML(html), 'text/html');
+      doc.querySelectorAll('img, svg, video, audio, canvas, iframe, script, style').forEach(n => n.remove());
+      const root = doc.body || doc.documentElement;
+      if (!root) continue;
+      
+      // 先收集所有 id/name 锚点
+      const anchors = new Map();  // id/name → 元素节点
+      for (const el of root.querySelectorAll('[id], a[name]')) {
+        const id = el.getAttribute('id') || el.getAttribute('name');
+        if (id && !anchors.has(id)) anchors.set(id, el);
       }
-      if (chapters.length >= 4000) break;
-    }
-    if (!chapters.length) throw new Error('没有解析出正文');
-    return { title, author, coverDataUrl, chapters };
-  }
-
-  /* 5.7.3：目录层级标题。把祖先层与本级拼成「第一部 · 第一卷 芳汀 · 一 冉阿让」，
-     这样「部 → 卷 → 章」的结构在扁平目录里也看得出来；过长时逐级收缩。 */
-  function joinTitle(parents, label) {
-    const chain = (parents || []).concat(label).map(s => String(s).trim()).filter(Boolean);
-    const uniq = [];
-    for (const s of chain) {
-      const last = uniq[uniq.length - 1];
-      /* 父级已包含本级文字（或反之）时不重复，避免「第一卷 芳汀 · 芳汀」 */
-      if (last && (s === last || last.indexOf(s) === 0 || s.indexOf(last) === 0)) continue;
-      uniq.push(s);
-    }
-    if (!uniq.length) return '';
-    let t = uniq.join(' · ');
-    if (t.length > 40 && uniq.length > 2) t = uniq.slice(-2).join(' · ');
-    if (t.length > 40) t = t.split(' · ').map(s => s.length > 18 ? s.slice(0, 18) + '…' : s).join(' · ');
-    return t;
-  }
-
-  /* 5.7.3：读目录条目——保留「层级」与「#锚点」，不再拍平成「文件路径 → 标题」。
-     旧实现有两个致命问题（《悲惨世界》目录乱的根因）：
-     ① 把 href 的 #锚点 直接抹掉，同一文件里的多个条目互相覆盖，
-        每个文件只剩最后写入的那个标题 → 「卷」全部消失、章标题变成随机某一个；
-     ② 用 OPF 路径去 resolve 目录里的 src，而 NCX/nav 的 src 是相对于
-        **目录文件自身**的，目录不在 OPF 同目录时全部匹配失败 → 退回「第 N 节」。
-     返回 [{ path, fragment, label, title, depth }]，按目录出现顺序排列。 */
-  async function readNavEntries(z, manifest, manifestProps, opfPath) {
-    let best = [];
-    const out = [];
-    const push = (navPath, hrefRaw, label, parents) => {
-      if (!hrefRaw || !label) return;
-      const hashAt = String(hrefRaw).indexOf('#');
-      const filePart = hashAt >= 0 ? hrefRaw.slice(0, hashAt) : String(hrefRaw);
-      const fragPart = hashAt >= 0 ? hrefRaw.slice(hashAt + 1) : '';
-      if (!filePart) return;
-      const path = resolve(navPath, filePart);
-      let fragment = fragPart;
-      try { fragment = decodeURIComponent(fragPart); } catch (e) {}
-      if (out.some(e => e.path === path && e.fragment === fragment)) return;
-      out.push({ path, fragment, label, title: joinTitle(parents, label), depth: parents.length });
-    };
-    const localName = (n) => String(n.localName || n.tagName || '').toLowerCase();
-    /* 只取直接子元素：NCX 里 <navPoint> 是嵌套的，
-       querySelector('content') 会穿透到子 navPoint，让「部」指到错误的文件 */
-    const childEl = (node, name) => Array.from(node.children || []).find(c => localName(c) === name) || null;
-    const childText = (node, name) => {
-      const el = childEl(node, name);
-      return el ? (el.textContent || '').trim().replace(/\s+/g, ' ') : '';
-    };
-    /* 目录候选：优先按 manifest 声明（EPUB3 properties="nav" / EPUB2 NCX mime），
-       声明缺失时再退回文件名启发式（toc/nav/ncx/contents + 网页扩展名） */
-    const cands = [];
-    for (const id of Object.keys(manifest)) {
-      const href = manifest[id];
-      const p = (manifestProps && manifestProps[id]) || {};
-      const declaredNav = /\bnav\b/.test(p.props || '');
-      const declaredNcx = /ncx/.test(p.mime || '') || /\.ncx$/i.test(href);
-      const byName = /(toc|nav|ncx|contents)/i.test(href) && /\.(ncx|x?html?|xhtm)$/i.test(href);
-      if (declaredNav || declaredNcx || byName) cands.push({ href, isNcx: declaredNcx || /\.ncx$/i.test(href) });
-    }
-    for (const cand of cands) {
-      const href = cand.href;
-      const navPath = resolve(opfPath, href);
-      let content = '';
-      try { content = await readEntry(z, navPath); } catch (e) { continue; }
-      if (cand.isNcx) {
-        const doc = textDoc(content, 'application/xml');
-        const walkNP = (np, parents) => {
-          const navLabel = childEl(np, 'navlabel');
-          const label = navLabel ? childText(navLabel, 'text') : childText(np, 'text');
-          const cEl = childEl(np, 'content');
-          const src = cEl ? (cEl.getAttribute('src') || '') : '';
-          if (label && src) push(navPath, src, label, parents);
-          for (const kid of Array.from(np.childNodes)) {
-            if (kid.nodeType === 1 && localName(kid) === 'navpoint') walkNP(kid, label ? parents.concat(label) : parents);
+      
+      // 按块级元素边界切分文本
+      pathToBlocks[path] = [];
+      const blockIndices = [];
+      const walk = (node, depth) => {
+        for (const child of Array.from(node.childNodes)) {
+          if (child.nodeType === 3) {
+            // 文本节点
+            const t = child.textContent.replace(/\s+/g, ' ').trim();
+            if (t) {
+              const block = {
+                path, index: blocks.length,
+                text: t,
+                anchorSet: new Set(),
+                depth
+              };
+              blocks.push(block);
+              blockIndices.push(block.index);
+            }
+          } else if (child.nodeType === 1) {
+            const tag = (child.localName || child.tagName || '').toLowerCase();
+            const isBlock = ['div','p','li','h1','h2','h3','h4','h5','h6','blockquote','section','article','tr','table','ul','ol','header','footer','nav'].includes(tag);
+            
+            // 检查这个元素或其内容是否包含锚点
+            if (anchors.has(child.getAttribute('id') || child.getAttribute('name'))) {
+              const id = child.getAttribute('id') || child.getAttribute('name');
+              const blockIdx = blockIndices[blockIndices.length - 1];
+              if (blockIdx !== undefined) {
+                blocks[blockIdx].anchorSet.add(id);
+              }
+            }
+            for (const [id, el] of anchors.entries()) {
+              if (child.contains(el) && child !== el) {
+                const blockIdx = blockIndices[blockIndices.length - 1];
+                if (blockIdx !== undefined) {
+                  blocks[blockIdx].anchorSet.add(id);
+                }
+              }
+            }
+            
+            walk(child, isBlock ? depth + 1 : depth);
           }
-        };
-        doc.querySelectorAll('navPoint').forEach(np => {
-          /* 只从最外层 navPoint 起递归，嵌套的由父级带下去（层级才准） */
-          let p = np.parentNode, nested = false;
-          while (p && p.nodeType === 1) { if (localName(p) === 'navpoint') { nested = true; break; } p = p.parentNode; }
-          if (!nested) walkNP(np, []);
-        });
-      } else {
-        const doc = textDoc(content, 'text/html');
-        const walkOl = (ol, parents) => {
-          for (const li of Array.from(ol.children)) {
-            if (localName(li) !== 'li') continue;
-            const kids = Array.from(li.children);
-            const a = kids.find(n => localName(n) === 'a' || localName(n) === 'span');
-            const label = a ? (a.textContent || '').trim().replace(/\s+/g, ' ') : '';
-            const hrefRaw = a ? (a.getAttribute('href') || '') : '';
-            const sub = kids.find(n => localName(n) === 'ol');
-            if (label && hrefRaw) push(navPath, hrefRaw, label, parents);
-            if (sub) walkOl(sub, label ? parents.concat(label) : parents);
-          }
-        };
-        /* EPUB3 nav 文档里通常同时有 toc / landmarks / page-list 三个 <nav>，
-           landmarks 与页码列表吃进来会造出假章节，只取目录那一份 */
-        const navs = Array.from(doc.querySelectorAll('nav'));
-        const navRoot = navs.find(n => /(^|\s)toc(\s|$)/.test(n.getAttribute('epub:type') || n.getAttribute('type') || ''))
-          || navs.find(n => n.querySelector('ol'))
-          || doc.body;
-        if (navRoot) navRoot.querySelectorAll('ol').forEach(ol => {
-          let p = ol.parentNode, nested = false;
-          while (p && p.nodeType === 1) { if (localName(p) === 'ol') { nested = true; break; } p = p.parentNode; }
-          if (!nested) walkOl(ol, []);
-        });
-      }
-      /* NCX 与 EPUB3 nav 可能同时存在：取条目最多（层级最完整）的那一份 */
-      if (out.length > best.length) best = out.slice();
-      out.length = 0;
+        }
+      };
+      walk(root, 0);
+      
+      pathToBlocks[path] = blockIndices;
     }
-    return best;
+    
+    return { blocks, pathToBlocks };
   }
 
-  /* 把行数组拼成正文段落（xhtmlToText 与 splitByNavEntries 共用） */
-  function linesToText(lines) {
-    const out = [];
-    let current = '';
-    for (const raw of lines) {
-      if (raw === '') { if (current) { out.push(current); current = ''; } continue; }
-      if (current === '') { current = raw; continue; }
-      if (/[。！？!?；;：:…。」』””]$/.test(current)) out.push(current), current = raw;
-      else current += raw;
-    }
-    if (current) out.push(current);
-    return out.map(s => s.trim()).filter(Boolean).join('\n').replace(/\n{3,}/g, '\n\n');
-  }
-
-  /* 5.7.3：按目录锚点把一个 xhtml 文件切成多章。
-     《悲惨世界》这类「部 → 卷 → 章」共用一个文件、靠 id 锚点区分的书，
-     旧实现整文件只给一个标题（且被后写的目录项覆盖），于是「卷」全部消失、
-     章标题张冠李戴。这里按锚点元素在文档中的位置切开，一段正文对应一个目录条目。 */
-  function splitByNavEntries(html, entries) {
-    const doc = textDoc(cleanHTML(html), 'text/html');
-    doc.querySelectorAll('img, svg, video, audio, canvas, iframe').forEach(n => n.remove());
-    const root = doc.body || doc.documentElement;
-    if (!root) return [];
-    const list = entries || [];
-    /* 定位每个条目对应的元素：优先 id，其次 a[name] */
-    const marks = [];
-    for (const e of list) {
-      if (!e.fragment) continue;
-      let el = null;
-      try { el = doc.getElementById(e.fragment); } catch (err) { el = null; }
-      if (!el) {
-        for (const c of Array.from(root.querySelectorAll('[id], a[name]'))) {
-          if (c.getAttribute('id') === e.fragment || c.getAttribute('name') === e.fragment) { el = c; break; }
+  /* 5.7.4：从目录树生成切点（Cut）列表
+     规则：按目录树的 DFS 顺序，为每个 NavNode 查找对应的块位置
+  */
+  function generateCuts(navRoot, blocks, pathToBlocks) {
+    const cuts = [];  // {navNode, blockPos, depth}
+    const anchorToBlock = new Map();  // fragment → blockIndex
+    
+    for (const block of blocks) {
+      for (const anchor of block.anchorSet) {
+        if (!anchorToBlock.has(anchor)) {
+          anchorToBlock.set(anchor, block.index);
         }
       }
-      if (el && root.contains(el)) marks.push({ el, entry: e });
     }
-    if (!marks.length) {
-      /* 没有可用锚点：整个文件算一章，标题取该文件在目录里的第一个条目 */
-      const text = xhtmlToText(html);
-      const t = list.length ? (list[0].title || list[0].label) : '';
-      return text.trim() ? [{ title: t, text }] : [];
-    }
-    /* 按文档顺序排序（不能用目录顺序：目录可能乱序或缺项） */
-    marks.sort((a, b) => {
-      const p = a.el.compareDocumentPosition(b.el);
-      if (p & 4) return -1;   /* DOCUMENT_POSITION_FOLLOWING */
-      if (p & 2) return 1;    /* DOCUMENT_POSITION_PRECEDING */
-      return 0;
-    });
-    const markIdx = new Map();
-    marks.forEach((m, i) => markIdx.set(m.el, i));
-    const buckets = marks.map(() => []);
-    const front = [];
-    let idx = -1;   /* 第一个锚点之前的内容（通常是部/卷的扉页标题） */
-    const pushLine = (s) => { (idx >= 0 ? buckets[idx] : front).push(s); };
-    const walk = (node) => {
-      for (const child of Array.from(node.childNodes)) {
-        if (child.nodeType === 3) {
-          const t = child.textContent.replace(/\s+/g, ' ').replace(/ *\n+ */g, ' ').trim();
-          if (!t) continue;
-          pushLine(t);
-        } else if (child.nodeType === 1) {
-          const mi = markIdx.get(child);
-          if (mi !== undefined) idx = mi;
-          const tag = child.localName ? String(child.localName).toLowerCase() : String(child.tagName || '').toLowerCase();
-          if (tag === 'br') { pushLine(''); continue; }
-          const isBlock = ['div','p','li','h1','h2','h3','h4','h5','h6','blockquote','section','article','tr','table','ul','ol','header','footer','nav','hr'].includes(tag);
-          if (isBlock && (child.textContent || '').trim()) pushLine('');
-          walk(child);
-          if (isBlock) pushLine('');
+    
+    const walk = (node, depth) => {
+      if (node.label) {
+        let blockPos = null;
+        
+        // 优先按锚点查
+        if (node.fragment) {
+          blockPos = anchorToBlock.get(node.fragment);
+        }
+        
+        // 锚点不中，尝试文件的第一个块
+        if (blockPos === undefined && node.href && pathToBlocks[node.href]) {
+          const fileBlocks = pathToBlocks[node.href];
+          if (fileBlocks.length > 0) blockPos = blocks[fileBlocks[0]].index;
+        }
+        
+        if (blockPos !== undefined) {
+          cuts.push({ navNode: node, blockPos, depth });
         }
       }
-    };
-    walk(root);
-    const out = [];
-    const frontText = linesToText(front);
-    marks.forEach((m, i) => {
-      let text = linesToText(buckets[i]);
-      if (!text.trim()) return;
-      /* 锚点前的扉页内容很短（部/卷标题），并入第一章，避免造出只有两行的假章 */
-      if (i === 0 && frontText && frontText.length <= 200) text = frontText + '\n' + text;
-      out.push({ title: m.entry.title || m.entry.label || '', text });
-    });
-    if (!out.length) {
-      const text = xhtmlToText(html);
-      return text.trim() ? [{ title: list.length ? (list[0].title || list[0].label) : '', text }] : [];
-    }
-    /* 第一个锚点前的内容较长时，单独成一章（多为「第一部」的卷首引言） */
-    if (frontText && frontText.length > 200) {
-      out.unshift({ title: list.length ? (list[0].title || list[0].label) : '', text: frontText });
-    }
-    /* 「卷」级锚点往往只含一行卷名，会切出两行字的空壳章；
-       卷名已经在章节标题里（第一部 · 第一卷 芳汀 · 一 冉阿让），所以并入下一章 */
-    const merged = [];
-    for (const item of out) {
-      const last = merged[merged.length - 1];
-      if (last && last.text.trim().length < 60 && merged.length > 1) {
-        /* 上一段是空壳（卷/部扉页），把它的文字并到当前段之前，标题仍用当前段 */
-        item.text = last.text.trim() + '\n' + item.text;
-        merged[merged.length - 1] = item;
-        continue;
+      
+      for (const child of node.children) {
+        walk(child, depth + 1);
       }
-      merged.push(item);
+    };
+    
+    walk(navRoot, 0);
+    cuts.sort((a, b) => a.blockPos - b.blockPos);
+    
+    return cuts;
+  }
+
+  /* 5.7.4：从切点生成最终章节（Chapter）
+     规则：Cut[i] 到 Cut[i+1] 之间的块为一个章节
+  */
+  function buildChapters(cuts, blocks) {
+    const chapters = [];
+    
+    for (let i = 0; i < cuts.length; i++) {
+      const startBlock = cuts[i].blockPos;
+      const endBlock = (i + 1 < cuts.length) ? cuts[i + 1].blockPos : blocks.length;
+      
+      if (startBlock < endBlock) {
+        const text = blocks.slice(startBlock, endBlock).map(b => b.text).join('\n');
+        const chapter = {
+          title: cuts[i].navNode.label,
+          text: text.trim(),
+          depth: cuts[i].depth
+        };
+        
+        if (text.trim()) {
+          chapters.push(chapter);
+        }
+      }
     }
-    return merged;
+    
+    return chapters;
   }
 
   function cleanHTML(html) {
@@ -400,7 +407,124 @@ const EpubParser = (() => {
       }
     };
     walk(doc.body || doc.documentElement);
-    return linesToText(lines);
+    const out = [];
+    let current = '';
+    for (const raw of lines) {
+      if (raw === '') { if (current) { out.push(current); current = ''; } continue; }
+      if (current === '') { current = raw; continue; }
+      if (/[。！？!?；;：:…。」』""]$/.test(current)) out.push(current), current = raw;
+      else current += raw;
+    }
+    if (current) out.push(current);
+    return out.map(s => s.trim()).filter(Boolean).join('\n').replace(/\n{3,}/g, '\n\n');
+  }
+
+  async function parse(file) {
+    const z = await openZip(file);
+    const opfPath = await readMeta(z);
+    const opf = textDoc(await readEntry(z, opfPath), 'application/xml');
+    const title = (opf.querySelector('metadata > title')?.textContent || '').trim();
+    const author = (opf.querySelector('metadata > creator')?.textContent || '').trim();
+    
+    const manifest = {};
+    const manifestProps = {};
+    opf.querySelectorAll('manifest > item').forEach(it => {
+      const id = it.getAttribute('id'), href = it.getAttribute('href');
+      if (id && href) {
+        manifest[id] = href;
+        manifestProps[id] = {
+          props: (it.getAttribute('properties') || '').toLowerCase(),
+          mime: (it.getAttribute('media-type') || '').toLowerCase(),
+        };
+      }
+    });
+    
+    const spine = [];
+    opf.querySelectorAll('spine > itemref').forEach(r => {
+      const id = r.getAttribute('idref');
+      if (id && manifest[id]) spine.push(manifest[id]);
+    });
+    
+    /* 5.7.4：新流程 — 读目录树、块流、生切点、输出章节 */
+    let navRoot = null;
+    
+    // 寻找目录文件候选
+    const cands = [];
+    for (const id of Object.keys(manifest)) {
+      const href = manifest[id];
+      const p = (manifestProps && manifestProps[id]) || {};
+      const declaredNav = /\bnav\b/.test(p.props || '');
+      const declaredNcx = /ncx/.test(p.mime || '') || /\.ncx$/i.test(href);
+      const byName = /(toc|nav|ncx|contents)/i.test(href) && /\.(ncx|x?html?|xhtm)$/i.test(href);
+      if (declaredNav || declaredNcx || byName) {
+        cands.push({ href, isNcx: declaredNcx || /\.ncx$/i.test(href) });
+      }
+    }
+    
+    for (const cand of cands) {
+      const href = cand.href;
+      const navPath = resolve(opfPath, href);
+      const root = cand.isNcx ? await readNcxNav(z, navPath, opfPath) : await readEpub3Nav(z, navPath, opfPath);
+      if (root && root.children.length > 0) {
+        resolveNavTree(root, opfPath, navPath);
+        navRoot = root;
+        break;
+      }
+    }
+    
+    // 如果根层是包裹层，自动剥离
+    if (navRoot && shouldUnwrapRoot(navRoot, title)) {
+      navRoot = navRoot.children[0];
+      navRoot.label = navRoot.label || title;
+    }
+    
+    // 构建块流
+    const { blocks, pathToBlocks } = await buildBlockStream(z, spine, opfPath);
+    
+    // 生成切点和章节
+    let chapters = [];
+    if (navRoot && blocks.length > 0) {
+      const cuts = generateCuts(navRoot, blocks, pathToBlocks);
+      if (cuts.length > 0) {
+        chapters = buildChapters(cuts, blocks);
+      }
+    }
+    
+    // 如果没有有效目录，退回到对 spine 文档逐个转换
+    if (!chapters.length) {
+      for (const href of spine) {
+        const path = resolve(opfPath, href);
+        let html = '';
+        try { html = await readEntry(z, path); }
+        catch (e) { continue; }
+        const text = xhtmlToText(html);
+        if (text.trim()) {
+          chapters.push({ title: ('第 ' + (chapters.length + 1) + ' 节'), text });
+        }
+      }
+    }
+    
+    if (!chapters.length) throw new Error('没有解析出正文');
+    
+    // 封面处理（保持不变）
+    let coverDataUrl = '';
+    const coverId = opf.querySelector('meta[name="cover"]')?.getAttribute('content');
+    const coverHref = (coverId && manifest[coverId]) || opf.querySelector('manifest > item[properties~="cover-image"]')?.getAttribute('href');
+    if (coverHref) {
+      try {
+        const blob = await readEntryBlob(z, resolve(opfPath, coverHref));
+        if (blob.size <= 400 * 1024 && blob.type.startsWith('image/')) {
+          coverDataUrl = await new Promise((res) => {
+            const r = new FileReader();
+            r.onload = () => res(String(r.result));
+            r.onerror = () => res('');
+            r.readAsDataURL(blob);
+          });
+        }
+      } catch (e) {}
+    }
+    
+    return { title, author, coverDataUrl, chapters };
   }
 
   return { parse, supported: () => typeof DecompressionStream !== 'undefined' };
